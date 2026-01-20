@@ -1,0 +1,19 @@
+Category,conditioncode_standard_id,Description,N
+Diabetes Type 2,E11.9,"Type 2 diabetes mellitus without complications",15234
+Diabetes Type 2,E11.65,"Type 2 diabetes mellitus with hyperglycemia",8421
+Diabetes Type 2,E11.8,"Type 2 diabetes mellitus with unspecified complications",3256
+Diabetes Type 2,E11.21,"Type 2 diabetes mellitus with diabetic nephropathy",2134
+Diabetes Type 2,E11.22,"Type 2 diabetes mellitus with diabetic chronic kidney disease",1987
+Diabetes Type 2,E11.29,"Type 2 diabetes mellitus with other diabetic kidney complication",543
+Diabetes Type 2,E11.311,"Type 2 diabetes mellitus with unspecified diabetic retinopathy with macular edema",876
+Diabetes Type 2,E11.319,"Type 2 diabetes mellitus with unspecified diabetic retinopathy without macular edema",1234
+Diabetes Type 2,E11.40,"Type 2 diabetes mellitus with diabetic neuropathy, unspecified",2567
+Diabetes Type 2,E11.42,"Type 2 diabetes mellitus with diabetic polyneuropathy",1876
+Diabetes Type 2,E11.51,"Type 2 diabetes mellitus with diabetic peripheral angiopathy without gangrene",987
+Diabetes Type 2,E11.52,"Type 2 diabetes mellitus with diabetic peripheral angiopathy with gangrene",234
+Diabetes Type 2,E11.621,"Type 2 diabetes mellitus with foot ulcer",567
+Diabetes Type 2,E11.622,"Type 2 diabetes mellitus with other skin ulcer",345
+Diabetes Type 2,E11.628,"Type 2 diabetes mellitus with other skin complications",123
+Diabetes Type 2,E11.630,"Type 2 diabetes mellitus with periodontal disease",89
+Diabetes Type 2,E11.638,"Type 2 diabetes mellitus with other oral complications",45
+Diabetes Type 2,E11.69,"Type 2 diabetes mellitus with other specified complication",678

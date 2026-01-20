@@ -1,0 +1,271 @@
+# LHN Implementation Guide
+
+This directory contains documentation and examples for understanding and using the `lhn` healthcare data package.
+
+## Directory Contents
+
+| File | Purpose | Audience |
+|------|---------|----------|
+| `lhn_reference.md` | Complete API reference with class relationships | LLM context injection, developers |
+| `lhn_project_initialization_guide.md` | Guide for generating project configs and notebooks | LLMs creating projects |
+| `the_config-files/` | Example configuration files | All users |
+
+## Three-Tier Configuration System
+
+Only **000-config.yaml** changes per project. The other two tiers are shared infrastructure.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TIER 1: 000-config.yaml (CHANGES PER PROJECT)                              │
+│  Location: {basePath}/Projects/{project}/000-config.yaml                    │
+│  Contains: project name, dates, schema mappings, projectTables              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TIER 2: config-global.yaml (SHARED - DO NOT CHANGE)                        │
+│  Location: {basePath}/configuration/config-global.yaml                      │
+│  Contains: callFunProcessDataTables mappings, config_table_locations        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TIER 3: config-RWD.yaml (SHARED - DO NOT CHANGE)                           │
+│  Location: {basePath}/configuration/config-RWD.yaml                         │
+│  Contains: source table definitions (source, inputRegex, insert)            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### What Goes Where
+
+| Configuration | File | Changes Per Project? |
+|--------------|------|---------------------|
+| Project name, disease, investigators | `000-config.yaml` | **YES** |
+| Study dates (historyStart, historyStop) | `000-config.yaml` | **YES** |
+| Schema mappings (RWDSchema → physical) | `000-config.yaml` | **YES** |
+| `projectTables` (output tables) | `000-config.yaml` | **YES** |
+| `callFunProcessDataTables` rules | `config-global.yaml` | NO |
+| Source table definitions | `config-RWD.yaml` | NO |
+| `inputRegex`, `insert` transforms | `config-RWD.yaml` | NO |
+
+## Example Configuration Files
+
+```
+the_config-files/
+├── 000-config-template.yaml   # Project-specific template (copy and modify)
+├── config-global.yaml         # Shared - do not modify per project
+├── config-RWD.yaml            # Shared - source table definitions
+└── example-codes.csv          # Example CSV code file format
+```
+
+## Quick Start
+
+### For Humans
+
+1. Copy `000-config-template.yaml` to your project directory as `000-config.yaml`
+2. Replace all `{placeholder}` values with your project-specific values
+3. Create CSV code files following `example-codes.csv` format
+4. Follow the notebook patterns in `lhn_project_initialization_guide.md`
+
+### For LLM Context
+
+Include these files in your prompt:
+1. `lhn_reference.md` - For understanding classes and methods
+2. `lhn_project_initialization_guide.md` - For generating project files
+
+**Critical for LLMs**:
+- **Only generate `000-config.yaml`** - never modify config-global.yaml or config-RWD.yaml
+- `projectTables` define OUTPUT tables the project creates
+- Source tables (conditionSource, medicationSource, etc.) are already defined in config-RWD.yaml
+
+## Key Concepts
+
+### Project Tables vs Source Tables
+
+| Type | Defined In | Purpose | Examples |
+|------|-----------|---------|----------|
+| Source Tables | `config-RWD.yaml` | READ from source schemas | `conditionSource`, `medicationSource` |
+| Project Tables | `000-config.yaml` | CREATED by this project | `cohort`, `demographics`, `ads` |
+
+### Three-Step Extraction Workflow
+
+```
+Step 1: create_extract     → Identify codes of interest
+        ↓
+Step 2: entityExtract      → Extract patient records matching codes
+        ↓
+Step 3: write_index_table  → Create patient-level summary
+```
+
+### Code Input Methods
+
+1. **CSV Files** (PREFERRED) - Clinician-verified codes
+2. **Dictionary** - Simple regex patterns in 000-config.yaml
+3. **Reference Join** - Join against existing dictionary tables
+
+## Usage Pattern
+
+### Standard Initialization
+
+```python
+from lhn import Resources, Extract
+
+# Initialize - Resources reads callFunProcessDataTables from config-global.yaml
+# and automatically creates all TableList/DB objects based on your schemas
+resource = Resources(project='MyStudy', spark=spark, process_all=True)
+
+# Resources auto-creates based on callFunProcessDataTables rules:
+#   resource.rwd   → TableList from RWDTables + RWDSchema
+#   resource.r     → DB wrapper for rwd
+#   resource.proj  → TableList from projectTables + projectSchema
+#   resource.db    → DB wrapper for proj
+
+e = Extract(resource.proj)  # Wrap project tables in ExtractItem
+r = resource.r              # Source table access
+
+# Three-step extraction
+e.codes.create_extract(elementList=..., find_method='regex')
+e.encounters.entityExtract(elementList=e.codes, entitySource=r.conditionSource)
+e.index.write_index_table(inTable=e.encounters)
+
+# Verify at each step
+e.codes.attrition()
+e.encounters.attrition()
+e.index.attrition()
+```
+
+### How callFunProcessDataTables Works
+
+In `config-global.yaml`, each rule maps a schema type to attribute names:
+
+```yaml
+callFunProcessDataTables:
+  RWDcallFunc:
+    data_type: 'RWDTables'       # Table definitions key (in config-RWD.yaml)
+    schema_type: 'RWDSchema'     # Schema key (in 000-config.yaml)
+    type_key: 'rwd'              # → resource.rwd (TableList)
+    property_name: 'r'           # → resource.r (DB wrapper)
+
+  projectcallFunc:
+    data_type: 'projectTables'   # Table definitions key (in 000-config.yaml)
+    schema_type: 'projectSchema' # Schema key (in 000-config.yaml)
+    type_key: 'proj'             # → resource.proj (TableList)
+    property_name: 'db'          # → resource.db (DB wrapper)
+```
+
+When `Resources(process_all=True)` runs, it:
+1. Reads `callFunProcessDataTables` from config-global.yaml
+2. For each rule where the schema exists, calls `processDataTables` internally
+3. Creates attributes on the Resource object (e.g., `resource.rwd`, `resource.r`)
+
+**You don't call `processDataTables` directly** - it's automated by the config.
+
+### The Extract Pattern (Method Enrichment)
+
+The `Extract` class wraps table Items in `ExtractItem` objects with rich methods:
+
+```python
+# ss is a TableList from processDataTables
+ss = processDataTables(config['RWDTables'], schema=RWDSchema, ...)
+
+# Wrap in Extract to get rich methods
+ess = Extract(ss)
+
+# Now you have ExtractItem methods:
+ess.death.showIU(obs=5)           # Display sample (tenant-filtered)
+ess.death.attrition()              # Record/person counts
+ess.death.location                 # Table path
+ess.death.df                       # Spark DataFrame
+ess.death.write()                  # Write to Spark table
+ess.death.create_extract(...)      # Find codes via regex/merge
+ess.death.entityExtract(...)       # Extract patient records
+ess.death.write_index_table(...)   # Create patient-level index
+```
+
+**Key Methods on ExtractItem:**
+
+| Method | Purpose |
+|--------|---------|
+| `showIU(obs=6, tenant=127)` | Display sample records (filtered by tenant) |
+| `attrition(person_id='personid')` | Show record/unique person counts |
+| `write(outTable=None)` | Write DataFrame to Spark table |
+| `create_extract(elementList, find_method)` | Find codes via regex or merge |
+| `entityExtract(elementList, entitySource)` | Extract matching records |
+| `write_index_table(inTable)` | Create first/last record index |
+| `load_csv_as_df()` | Load CSV codes file |
+| `toPandas(limit=None)` | Convert to pandas |
+
+### Notebook Setup Pattern
+
+For clean notebook code, use this setup cell with `load_into_local`:
+
+```python
+#| include: false
+from lhn import Resources
+
+resource = Resources(project='MyStudy', spark=spark, process_all=True)
+
+# load_into_local creates the Extract object AND loads variables
+locals().update(resource.load_into_local(
+    everything=False,
+    schemakey='projectSchema',
+    extractName='e'
+))
+# Now available: e (Extract), r (DB for source), db (DB for project), etc.
+```
+
+Now you can write clean analysis cells:
+
+```python
+# Direct access to source tables via r (DB wrapper)
+r.conditionSource.filter(F.col('code').like('E11%')).count()
+
+# Rich ExtractItem methods via e (Extract wrapper)
+e.cohort.showIU(obs=10)
+e.cohort.attrition()
+e.cohort.location
+```
+
+### What Gets Created
+
+After `Resources` initialization with typical config:
+
+| Attribute | Type | Source | Access Pattern |
+|-----------|------|--------|----------------|
+| `resource.rwd` | TableList | RWDTables + RWDSchema | `resource.rwd.conditionSource` |
+| `resource.r` | DB | DB wrapper for rwd | `r.conditionSource` (DataFrame directly) |
+| `resource.proj` | TableList | projectTables + projectSchema | `resource.proj.cohort` |
+| `resource.db` | DB | DB wrapper for proj | `db.cohort` (DataFrame directly) |
+| `e` (via load_into_local) | Extract | Extract(resource.proj) | `e.cohort.showIU()` |
+
+## Workflow for LLM Project Generation
+
+1. **User describes study**: "I want to study diabetes patients..."
+
+2. **LLM generates ONLY**:
+   - `000-config.yaml` with `projectTables` definitions
+   - CSV code files (if needed)
+   - Jupyter notebooks following extraction patterns
+
+3. **LLM does NOT generate**:
+   - `config-global.yaml` (shared infrastructure)
+   - `config-RWD.yaml` (shared infrastructure)
+   - Source table definitions (already in config-RWD.yaml)
+
+4. **User runs notebooks** in order:
+   - 010-Cohort-Identification
+   - 020-Demographics
+   - 030-Condition-Extraction
+   - etc.
+
+## Dependencies
+
+- `spark-config-mapper >= 0.1.0`
+- `pyspark >= 3.0.0`
+- `pyyaml >= 5.0`
+- `pandas >= 1.0.0`
+
+## Related Packages
+
+- **spark_config_mapper**: Configuration management (dependency)
+- **txtarchive**: Archive format for sharing code with LLMs
