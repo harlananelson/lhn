@@ -1,0 +1,301 @@
+# ============================================================================
+# PROJECT CONFIGURATION TEMPLATE
+# ============================================================================
+# Copy this file to your project directory and rename to 000-config.yaml
+# Replace all {placeholder} values with your project-specific values
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# PROJECT IDENTIFICATION
+# ----------------------------------------------------------------------------
+project: {ProjectName}
+investigators: |
+  {Investigator 1}
+  {Investigator 2}
+systemuser: hnelson3
+
+# ----------------------------------------------------------------------------
+# STUDY PARAMETERS
+# ----------------------------------------------------------------------------
+startDate: "{YYYY-MM-DD}"
+stopDate: ${today}
+historyStart: "{YYYY-MM-DD}"
+historyStop: ${today}
+
+disease: "{ABBREV}"                   # e.g., "DM2", "SCD", "CHF"
+schemaTag: "RWD"                      # "RWD" | "OMOP" | "IUH"
+gap: 90                               # Days for therapy course gaps
+serviceToFirstDx: 60                  # Baseline period in days
+
+# ----------------------------------------------------------------------------
+# SCHEMA MAPPINGS
+# ----------------------------------------------------------------------------
+schemas:
+  RWDSchema: {source_schema_name}     # Source data schema
+  projectSchema: {output_schema_name} # Project output schema
+
+# ----------------------------------------------------------------------------
+# COHORT DEFINITION
+# ----------------------------------------------------------------------------
+# Define search patterns for cohort identification
+
+# Primary condition pattern (regex)
+search_string_primary: "{ICD10_PATTERN}"  # e.g., "E11\\.[0-9]"
+
+# Exclusion pattern (regex) - optional
+search_string_exclusion: "{ICD10_EXCLUSION_PATTERN}"
+
+# ----------------------------------------------------------------------------
+# PROJECT TABLES
+# ----------------------------------------------------------------------------
+projectTables:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COHORT IDENTIFICATION TABLES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  persontenant:
+    label: "Cohort patients - {disease} study"
+    indexFields: ["personid", "tenant"]
+    partitionBy: "tenant"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PRIMARY CONDITION EXTRACTION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Code identification (dictionary method)
+  primary_codes:
+    label: "Primary condition codes"
+    dictionary:
+      primary: "${search_string_primary}"
+    listIndex: "codes"
+    sourceField: "conditioncode_standard_id"
+    complete: True
+
+  # Verified codes (output of create_extract)
+  primary_codes_verified:
+    label: "Verified primary codes"
+    groupName: "regexgroup"
+    indexFields:
+      - "conditioncode_standard_primaryDisplay"
+      - "conditioncode_standard_id"
+      - "conditioncode_standard_codingSystemId"
+    datefield: null
+
+  # Encounter extraction (output of entityExtract)
+  primary_encounters:
+    label: "Primary condition encounters"
+    datefield: "datetimeCondition"
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+    indexFields: ["personid", "tenant"]
+    retained_fields:
+      - "encounterid"
+      - "conditionid"
+      - "conditioncode_standard_id"
+      - "conditioncode_standard_primaryDisplay"
+      - "classification_standard_primaryDisplay"
+      - "datetimeCondition"
+      - "tenant"
+
+  # Patient index (output of write_index_table)
+  primary_index:
+    label: "Primary condition patient index"
+    indexFields: ["personid", "tenant"]
+    datefieldPrimary: "datetimeCondition"
+    datefieldStop: "datetimeCondition"
+    code: "{CODE_ABBREV}"              # e.g., "DM2" -> creates index_DM2, last_DM2
+    retained_fields:
+      - "conditioncode_standard_primaryDisplay"
+      - "tenant"
+    sort_fields: ["datetimeCondition"]
+    max_gap: 365
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMORBIDITY EXTRACTION (CSV method - preferred)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # CSV codes (file: {dataLoc}comorbidity_codes_{disease}_{schemaTag}.csv)
+  comorbidity_codes:
+    label: "Comorbidity codes from clinical review"
+    indexFields:
+      - "conditioncode_standard_id"
+      - "Category"
+      - "Description"
+
+  comorbidity_encounters:
+    label: "Comorbidity condition encounters"
+    datefield: "datetimeCondition"
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+    indexFields: ["personid", "tenant"]
+    retained_fields:
+      - "encounterid"
+      - "conditioncode_standard_id"
+      - "conditioncode_standard_primaryDisplay"
+      - "datetimeCondition"
+      - "tenant"
+
+  comorbidity_index:
+    label: "Comorbidity patient index"
+    indexFields: ["personid", "tenant"]
+    datefieldPrimary: "datetimeCondition"
+    code: "COMRB"
+    retained_fields:
+      - "conditioncode_standard_primaryDisplay"
+    sort_fields: ["datetimeCondition"]
+    max_gap: 365
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MEDICATION EXTRACTION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  medication_codes:
+    label: "Target medication codes"
+    dictionary:
+      med_class_1: "{DRUG_CODE_1}"
+      med_class_2: "{DRUG_CODE_2}"
+    listIndex: "codes"
+    sourceField: "drugcode_standard_id"
+    complete: True
+
+  medication_codes_verified:
+    label: "Verified medication codes"
+    groupName: "medgroup"
+    indexFields:
+      - "drugcode_standard_primaryDisplay"
+      - "drugcode_standard_id"
+    datefield: null
+
+  medication_encounters:
+    label: "Medication records"
+    datefield: "datetimeMed"
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+    indexFields: ["personid", "tenant"]
+    retained_fields:
+      - "medicationid"
+      - "encounterid"
+      - "drugcode_standard_id"
+      - "drugcode_standard_primaryDisplay"
+      - "startdate"
+      - "stopdate"
+      - "datetimeMed"
+      - "tenant"
+
+  medication_index:
+    label: "Medication patient index"
+    indexFields: ["personid", "tenant"]
+    datefieldPrimary: "datetimeMed"
+    datefieldStop: "stopdate"
+    code: "MED"
+    retained_fields:
+      - "drugcode_standard_primaryDisplay"
+    sort_fields: ["datetimeMed"]
+    max_gap: 90
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LAB EXTRACTION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  lab_codes:
+    label: "Target lab codes"
+    dictionary:
+      lab_test_1: "{LOINC_CODE_1}"
+      lab_test_2: "{LOINC_CODE_2}"
+    listIndex: "codes"
+    sourceField: "labcode_standard_id"
+    complete: True
+
+  lab_codes_verified:
+    label: "Verified lab codes"
+    groupName: "labgroup"
+    indexFields:
+      - "labcode_standard_primaryDisplay"
+      - "labcode_standard_id"
+    datefield: null
+
+  lab_encounters:
+    label: "Lab results"
+    datefield: "datetimeLab"
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+    indexFields: ["personid", "tenant"]
+    retained_fields:
+      - "labid"
+      - "encounterid"
+      - "labcode_standard_id"
+      - "labcode_standard_primaryDisplay"
+      - "typedvalue_numericValue_value"
+      - "typedvalue_unitOfMeasure_standard_primaryDisplay"
+      - "datetimeLab"
+      - "tenant"
+
+  lab_index:
+    label: "Lab patient index"
+    indexFields: ["personid", "tenant"]
+    datefieldPrimary: "datetimeLab"
+    code: "LAB"
+    retained_fields:
+      - "labcode_standard_primaryDisplay"
+      - "typedvalue_numericValue_value"
+    sort_fields: ["datetimeLab"]
+    max_gap: 365
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEMOGRAPHICS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  demographics:
+    label: "Patient demographics"
+    datefield: "birthdate"
+    indexFields: ["personid", "tenant"]
+
+  death:
+    label: "Patient death records"
+    indexFields: ["personid", "tenant"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FOLLOW-UP METRICS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  follow_condition:
+    label: "Follow-up from conditions"
+    indexFields: ["personid", "tenant"]
+    retained_fields: []
+    datefieldPrimary: "datetimeCondition"
+    datefieldStop: "datetimeCondition"
+    code: "cond"
+    sort_fields: ["datetimeCondition"]
+    max_gap: 1096
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  follow_encounter:
+    label: "Follow-up from encounters"
+    indexFields: ["personid", "tenant"]
+    retained_fields: []
+    datefieldPrimary: "datetimeEnc"
+    datefieldStop: "dischargedate"
+    code: "enc"
+    sort_fields: ["datetimeEnc"]
+    max_gap: 1096
+    histStart: "${historyStart}"
+    histEnd: "${historyStop}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ANALYTIC DATASET
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ads:
+    label: "Analytic Dataset - {ProjectName}"
+    indexFields: ["personid", "tenant"]
+    datefield: "index_date"

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lhn"
+version = "0.2.0"
+description = "Healthcare data extraction and analysis workflows for HealthEIntent systems"
+readme = "README.md"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Harlan Nelson", email = "hnelson@example.com"}
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+keywords = [
+    "healthcare",
+    "clinical-data",
+    "spark",
+    "pyspark",
+    "data-extraction",
+    "cohort-analysis",
+    "healthEintent"
+]
+dependencies = [
+    "spark-config-mapper>=0.1.0",
+    "pyspark>=3.0.0",
+    "pyyaml>=5.0",
+    "pandas>=1.0.0",
+    "numpy>=1.18.0",
+    "scipy>=1.4.0",
+    "matplotlib>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=22.0",
+    "flake8>=4.0",
+]
+plotting = [
+    "plotnine>=0.10.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/hnelson3/lhn"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lhn*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310']
