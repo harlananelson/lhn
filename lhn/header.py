@@ -37,15 +37,16 @@ _base_get_logger = get_logger
 def get_logger(name: str, level=logging.INFO) -> logging.Logger:
     """
     Get a configured logger for lhn modules.
-    
+
     Parameters:
         name (str): Logger name (typically __name__)
         level: Logging level (default INFO)
-    
+
     Returns:
         logging.Logger: Configured logger instance
     """
-    logger = _base_get_logger(name, level)
+    logger = _base_get_logger(name)
+    logger.setLevel(level)
     return logger
 
 
