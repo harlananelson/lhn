@@ -10,6 +10,7 @@ consistent Spark configuration and logging for healthcare data processing.
 
 # Import everything from spark_config_mapper.header
 from spark_config_mapper.header import *
+import logging
 
 # Additional imports for healthcare workflows
 from IPython.display import Markdown, display, HTML
