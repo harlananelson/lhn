@@ -75,6 +75,102 @@ cd ../lhn-original
 
 ---
 
+## Running Both Versions in Jupyter (Same System)
+
+To use production and development versions simultaneously in different notebooks, create separate virtual environments and register them as Jupyter kernels.
+
+### Step 1: Set Up Production Environment
+
+```bash
+# Navigate to production repo
+cd /path/to/lhn-original
+
+# Create virtual environment
+python -m venv .venv-prod
+
+# Activate it
+source .venv-prod/bin/activate   # Linux/Mac
+# or: .venv-prod\Scripts\activate  # Windows
+
+# Install the package in editable mode
+pip install -e .
+
+# Install Jupyter kernel support
+pip install ipykernel
+
+# Register as a Jupyter kernel
+python -m ipykernel install --user --name lhn-prod --display-name "Python (lhn-prod v0.1.0)"
+
+# Deactivate when done
+deactivate
+```
+
+### Step 2: Set Up Development Environment
+
+```bash
+# Navigate to development repo
+cd /path/to/lhn
+
+# Create virtual environment
+python -m venv .venv-dev
+
+# Activate it
+source .venv-dev/bin/activate
+
+# Install dependencies first (if spark_config_mapper exists)
+pip install -e ../spark_config_mapper
+
+# Install the dev package
+pip install -e .
+
+# Install Jupyter kernel support
+pip install ipykernel
+
+# Register as a Jupyter kernel
+python -m ipykernel install --user --name lhn-dev --display-name "Python (lhn-dev v0.2.0)"
+
+# Deactivate when done
+deactivate
+```
+
+### Step 3: Use in Jupyter
+
+In Jupyter, select the kernel from the menu:
+- **Kernel > Change Kernel > Python (lhn-prod v0.1.0)** for production
+- **Kernel > Change Kernel > Python (lhn-dev v0.2.0)** for development
+
+Each notebook can use a different kernel independently.
+
+### Managing Kernels
+
+```bash
+# List installed kernels
+jupyter kernelspec list
+
+# Remove a kernel
+jupyter kernelspec remove lhn-dev
+```
+
+### Alternative: sys.path Manipulation (Quick but Fragile)
+
+If you can't create virtual environments, you can manipulate the path at notebook startup:
+
+```python
+# At the TOP of your notebook (before any imports)
+import sys
+# For development:
+sys.path.insert(0, '/path/to/lhn')
+# OR for production:
+# sys.path.insert(0, '/path/to/lhn-original')
+
+# Now import
+import lhn
+```
+
+**Warning**: This approach is fragile and can cause issues if dependencies differ between versions.
+
+---
+
 ## Refactoring Plan
 
 The monolithic `lhn` package is being split into:
