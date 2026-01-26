@@ -1,5 +1,9 @@
 # lhn - HealthEIntent Package
 
+**STATUS: DEVELOPMENT (v0.2.0.dev0)**
+
+> This is the development/refactored version. Production code is in `../lhn-original/`
+
 Healthcare data extraction and analysis workflows for HealthEIntent systems.
 
 ## Overview
