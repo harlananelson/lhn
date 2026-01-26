@@ -2,7 +2,7 @@
 
 **STATUS: DEVELOPMENT (v0.2.0.dev0)**
 
-> This is the development/refactored version. Production code is in `../lhn-original/`
+> This is the development/refactored version. For production code, switch to branch `v0.1.0-monolithic`.
 
 Healthcare data extraction and analysis workflows for HealthEIntent systems.
 

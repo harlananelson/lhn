@@ -2,12 +2,14 @@
 
 ## Repository Overview
 
-This project is split across two repositories during refactoring:
+This GitHub repository contains both versions on separate branches:
 
-| Repository | Purpose | Remote | Status |
-|------------|---------|--------|--------|
-| `lhn-original` | Production code (monolithic) | Azure DevOps | Active Production |
-| `lhn` | Development/refactored code | GitHub | **In Development** |
+| Branch | Purpose | Status |
+|--------|---------|--------|
+| `main` | Development/refactored code | **In Development** |
+| `v0.1.0-monolithic` | Production code (monolithic) | Active Production |
+
+> **Note**: The production code is also maintained in a separate Azure DevOps repo (`lhn-original`).
 
 ---
 
@@ -21,18 +23,22 @@ This project is split across two repositories during refactoring:
 
 ## Important Branches
 
-### lhn (this repo)
+### This Repository (GitHub)
 
 | Branch | Description |
 |--------|-------------|
 | `main` | Development branch (refactored code) |
+| `v0.1.0-monolithic` | Production branch (original monolithic code) |
 
-### lhn-original (production repo)
+### Switch Between Versions
 
-| Branch | Description |
-|--------|-------------|
-| `main` | Production branch |
-| `write_index` | Feature branch for write_index_table improvements |
+```bash
+# Switch to production (monolithic)
+git checkout v0.1.0-monolithic
+
+# Switch to development (refactored)
+git checkout main
+```
 
 ---
 
