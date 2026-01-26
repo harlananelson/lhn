@@ -1,0 +1,272 @@
+```mermaid
+flowchart TB
+    subgraph INIT["Resources.__init__()"]
+        A1[/"project='SickleCell'<br/>spark=spark<br/>process_all=True"/]
+        A2["Set basePath, config_file"]
+        A3["Initialize config_table_locations:<br/>• config_local → 000-config.yaml<br/>• config_global → config-global.yaml"]
+        A4["Initialize replace dict:<br/>• today → current date<br/>• dataPath → basePath"]
+        A5{"process_all?"}
+        A1 --> A2 --> A3 --> A4 --> A5
+    end
+
+    subgraph CONFIG["read_config_all()"]
+        B1["Load 000-config.yaml"]
+        B2["Apply ${var} substitution"]
+        B3["Merge into config_dict"]
+        B4["Load config-global.yaml"]
+        B5["Discover config_table_locations"]
+        B6["Load each referenced config<br/>(config-RWD.yaml, etc.)"]
+        B7["Merge all into config_dict"]
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7
+    end
+
+    subgraph PROCESS["processAllDataTables()"]
+        C1["Get schemas dict from config_dict"]
+        C2["Get callFunProcessDataTables dict"]
+        C3["For each schema in schemas:"]
+        
+        subgraph LOOP["Process Each Schema"]
+            D1["schema_key = 'RWDSchema'<br/>schema_value = 'iuhealth_ed_data_cohort_202306'"]
+            D2["Find callFunc where<br/>schema_type == schema_key"]
+            D3{"callFunc<br/>found?"}
+            D4{"database_exists<br/>(schema_value)?"}
+            D5["Get data_type from callFunc<br/>e.g., 'RWDTables'"]
+            D6["Get table definitions:<br/>config_dict[data_type]"]
+            D7["Create Item for each table"]
+            D8["Create TableList from Items"]
+            D9["setattr(self, type_key, TableList)<br/>e.g., self.rwd = TableList"]
+            D10["setattr(self, property_name, DB)<br/>e.g., self.r = DB(...)"]
+            
+            D1 --> D2 --> D3
+            D3 -->|Yes| D4
+            D3 -->|No| SKIP1["Log: No matching callFunc<br/>Skip schema"]
+            D4 -->|Yes| D5
+            D4 -->|No| SKIP2["Log: Schema not found<br/>Skip schema"]
+            D5 --> D6 --> D7 --> D8 --> D9 --> D10
+        end
+        
+        C1 --> C2 --> C3 --> LOOP
+    end
+
+    subgraph RESULT["Final State"]
+        E1["resource.rwd = TableList[Item]"]
+        E2["resource.r = DB (DataFrame access)"]
+        E3["resource.proj = TableList[Item]"]
+        E4["resource.db = DB (DataFrame access)"]
+        E5["resource.config_dict = merged config"]
+    end
+
+    A5 -->|Yes| CONFIG
+    A5 -->|No| DEFER["Deferred: call finish_init() manually"]
+    CONFIG --> PROCESS
+    PROCESS --> RESULT
+
+    style INIT fill:#e1f5fe
+    style CONFIG fill:#fff3e0
+    style PROCESS fill:#e8f5e9
+    style RESULT fill:#f3e5f5
+    style LOOP fill:#e8f5e9
+```
+
+---
+
+```mermaid
+flowchart LR
+    subgraph FILES["Configuration Files"]
+        F1["000-config.yaml<br/>(Project)"]
+        F2["config-global.yaml<br/>(Global)"]
+        F3["config-RWD.yaml<br/>(Structure)"]
+    end
+
+    subgraph KEYS["Key Dictionaries"]
+        K1["schemas"]
+        K2["callFunProcessDataTables"]
+        K3["RWDTables"]
+    end
+
+    subgraph RESOLUTION["Resolution Chain"]
+        R1["'RWDSchema'"]
+        R2["'iuhealth_ed_data_cohort_202306'"]
+        R3["RWDcallFunc"]
+        R4["data_type='RWDTables'"]
+        R5["Table definitions"]
+    end
+
+    subgraph OUTPUT["Created Objects"]
+        O1["resource.rwd<br/>(TableList)"]
+        O2["resource.r<br/>(DB)"]
+    end
+
+    F1 --> K1
+    F2 --> K2
+    F3 --> K3
+    
+    K1 -->|"schemas['RWDSchema']"| R1
+    R1 -->|"resolves to"| R2
+    
+    K2 -->|"find where schema_type='RWDSchema'"| R3
+    R3 -->|"data_type"| R4
+    R4 -->|"config_dict[data_type]"| R5
+    
+    K3 --> R5
+    
+    R2 -->|"Spark schema"| O1
+    R5 -->|"Table definitions"| O1
+    O1 -->|"type_key='rwd'"| O2
+
+    style FILES fill:#ffecb3
+    style KEYS fill:#b3e5fc
+    style RESOLUTION fill:#c8e6c9
+    style OUTPUT fill:#f8bbd9
+```
+
+---
+
+```mermaid
+classDiagram
+    class Resources {
+        +project: str
+        +spark: SparkSession
+        +basePath: Path
+        +config_dict: dict
+        +config_table_locations: dict
+        +replace: dict
+        +property_names_processed: set
+        +rwd: TableList
+        +r: DB
+        +proj: TableList
+        +db: DB
+        +__init__(project, spark, ...)
+        +finish_init()
+        +read_config_all()
+        +processAllDataTables()
+        +processDataTableBySchemakey(schemakey)
+        +processDataTables(data_type, schema_type, ...)
+        +load_into_local(everything, schemakey, extractName)
+        +find_callFunProcessDataTables(schemakey, callFunDict)
+    }
+
+    class TableList {
+        +__init__(tableDict)
+        +items()
+        +__getitem__(key)
+        +__repr__()
+    }
+
+    class Item {
+        +name: str
+        +source: str
+        +schema: str
+        +location: str
+        +df: DataFrame
+        +csv: str
+        +parquet: str
+        +existsDF: bool
+        +inputRegex: list
+        +__init__(TBL, dataTables, TBLLoc, ...)
+        +show_attributes()
+        +writeTable()
+        +readTable()
+    }
+
+    class DB {
+        +__init__(resources_dict, dataset)
+        +writeTBL(reRun)
+    }
+
+    class Extract {
+        +__init__(proj, debug)
+        +properties()
+    }
+
+    class ExtractItem {
+        +debug: bool
+        +partitionBy: str
+        +__init__(item, debug)
+        +properties()
+        +dict2pyspark(columnname)
+        +load_csv_as_df()
+        +create_extract()
+        +entityExtract()
+    }
+
+    class SharedMethodsMixin {
+        <<mixin>>
+        +attrition()
+        +tabulate(by, index, ...)
+        +print_pd(obs, label, ...)
+        +to_csv()
+        +to_parquet(path, ...)
+    }
+
+    Resources "1" *-- "many" TableList : creates
+    Resources "1" *-- "many" DB : creates
+    TableList "1" *-- "many" Item : contains
+    DB ..> TableList : wraps
+    Extract "1" *-- "many" ExtractItem : contains
+    ExtractItem --|> Item : inherits from
+    Item ..|> SharedMethodsMixin : uses
+    ExtractItem ..|> SharedMethodsMixin : uses
+    DB ..|> SharedMethodsMixin : uses
+```
+
+---
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Resources
+    participant Config as Config Files
+    participant Spark
+    participant TableList
+    participant Item
+    participant DB
+
+    User->>Resources: Resources(project, spark, process_all=True)
+    activate Resources
+    
+    Resources->>Resources: __init__(): set basePath, config_table_locations
+    
+    Resources->>Config: read_config_all()
+    activate Config
+    Config-->>Resources: 000-config.yaml (schemas, projectTables)
+    Config-->>Resources: config-global.yaml (callFunProcessDataTables)
+    Config-->>Resources: config-RWD.yaml (RWDTables)
+    deactivate Config
+    
+    Resources->>Resources: processAllDataTables()
+    
+    loop For each schema in schemas
+        Resources->>Resources: find_callFunProcessDataTables('RWDSchema')
+        Resources->>Spark: database_exists('iuhealth_ed_data_cohort_202306')
+        Spark-->>Resources: True
+        
+        Resources->>Resources: processDataTables(data_type='RWDTables', ...)
+        
+        loop For each table in RWDTables
+            Resources->>Item: Item(TBL, dataTables, schema, ...)
+            Item->>Spark: spark.sql("SELECT * FROM schema.table")
+            Spark-->>Item: DataFrame
+            Item-->>Resources: Item instance
+        end
+        
+        Resources->>TableList: TableList(items_dict)
+        TableList-->>Resources: TableList instance
+        
+        Resources->>Resources: setattr(self, 'rwd', TableList)
+        
+        Resources->>DB: DB(self.__dict__, 'rwd')
+        DB-->>Resources: DB instance
+        
+        Resources->>Resources: setattr(self, 'r', DB)
+    end
+    
+    deactivate Resources
+    Resources-->>User: resource object ready
+    
+    User->>Resources: resource.r.conditionSource
+    Resources->>DB: __getattr__('conditionSource')
+    DB->>TableList: get Item
+    TableList->>Item: get df
+    Item-->>User: DataFrame
+```

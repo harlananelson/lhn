@@ -1,0 +1,2530 @@
+# Archive created on: 2026-01-14 14:49:21
+
+# LLM-FRIENDLY CODE ARCHIVE
+# Generated from: Projects/SickleCell
+# Date: 2026-01-14 14:49:21
+
+# TABLE OF CONTENTS
+1. 280-Disease-Classification.ipynb
+
+################################################################################
+# FILE 1: 280-Disease-Classification-test.ipynb
+################################################################################
+
+# Cell 2
+pacman::p_load(here,data.table,magrittr,infer,janitor ,IRdisplay,survival, lubridate, labelled,gt, tidyverse, knitr, visNetwork, targets, tarchetypes, vip, tidymodels, pdp )
+
+# Cell 3
+# Validate environment setup
+user_path <- Sys.getenv("SICKLE_CELL_DATA_PATH", 
+                       unset = file.path(path.expand("~"), "work", "Users", Sys.getenv("USER")))
+
+project         <- 'SickleCell'
+projectSchema   <- 'sicklecell_study_rwd'
+
+# Use file.path for joining paths
+dataLoc      <- file.path(user_path, "inst", "extdata", project) 
+project_path <- file.path(user_path, "Projects", project)
+
+# Source R files
+
+
+# Cell 4
+source(file.path(user_path, "R", 'lhn-functions.R'))
+
+# Cell 5
+source(file.path(project_path, "R", 'functions.R'))
+
+# Markdown Cell 6
+"""
+## A Review of what data is available
+"""
+
+# Cell 7
+tar_manifest()
+
+# Markdown Cell 8
+"""
+## Conditions
+"""
+
+# Cell 9
+# Encounter Level Conditions: used to identify Disease Severity by Patients and Condition
+tar_read(comorbidity_ConditionEncounter) %>% names()
+
+# Cell 10
+tar_read(conditions) %>% 
+group_by(conditioncode_standard_id, condition) %>% 
+summarize(persons = n_distinct(personid), .groups = 'drop') %>% 
+  arrange(desc(persons), condition)  %>% 
+display_gt_basic()
+
+# Cell 11
+tar_read(conditions)  %>% 
+head(1) %>% 
+display_gt_basic()
+
+# Markdown Cell 12
+"""
+### Table with more than one record per patient that will contains each patients conditions
+"""
+
+# Cell 13
+condition_list  <- tar_read(conditions)  %>% 
+mutate(code_system = 'ICD10CM',code_value = conditioncode_standard_id) %>% 
+select(code_system, code_value)  %>% 
+distinct()  
+
+condition_list  %>% 
+head(5)
+
+# Markdown Cell 14
+"""
+### Read In the Control File
+"""
+
+# Cell 15
+end_organ_damage_codeset_regex  <- fread(here::here(dataLoc, 'end-organ-damage-codeset-regex.csv'))
+
+# Cell 16
+end_organ_damage_codeset_regex
+
+# Cell 17
+end_organ_damage_codeset_regex  %>% 
+filter(str_detect(feature, 'Hypoxia_'))
+
+# Cell 18
+condition_list   %>% 
+head()
+
+# Markdown Cell 19
+"""
+### Create a Crosswalk between the control table and the data index elements
+"""
+
+# Cell 21
+end_organ_damage_crosswalk  <- condition_list %>% 
+  inner_join(end_organ_damage_codeset_regex, by = c('code_system')) %>% 
+  filter(str_detect(code_value, regex_pattern)) %>% 
+  select(code_system, code_value, regex_pattern,feature, severity_bucket,organ_system, shah_organ_damage_level)  
+
+end_organ_damage_crosswalk  %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Cell 22
+tar_read(conditions) %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Cell 23
+organ_severity  <- tar_read(conditions)  %>% 
+mutate(date_condition = as.Date(datetime_condition))  %>% 
+mutate(code_system = 'ICD10CM',code_value = conditioncode_standard_id) %>% 
+inner_join(end_organ_damage_crosswalk, by = c('code_system', 'code_value'))  %>% 
+select(personid, date_condition, feature, severity_bucket, organ_system, shah_organ_damage_level)
+
+organ_severity %>% 
+head()
+            
+
+# Cell 24
+organ_severity  %>% count(shah_organ_damage_level)
+
+# Cell 25
+organ_severity  %>% count(feature)
+
+# Cell 26
+organ_severity  %>% count(feature)
+
+# Markdown Cell 27
+"""
+### Think about selecting organ_severity by selecting the highest level for each person
+"""
+
+# Cell 28
+library(forcats)
+library(dplyr)
+
+# Define severity order (least to most severe)
+severity_levels <- c("count_dependent", "mild_moderate", "severe")
+
+organ_severity_ranked <- organ_severity %>%
+  mutate(
+    shah_organ_damage_level = factor(
+      shah_organ_damage_level,
+      levels = severity_levels,
+      ordered = TRUE
+    )
+  )
+
+# Summarize to highest severity per person
+person_max_severity <- organ_severity_ranked %>%
+  group_by(personid) %>%
+  slice_max(shah_organ_damage_level, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Cell 29
+person_max_severity %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Markdown Cell 30
+"""
+## Medications
+"""
+
+# Cell 31
+chronic_pain_medication_codeset  <- fread(here::here(dataLoc, "chronic_pain_medication_codeset.csv"))  %>% 
+rename(code_value = multum_code)   %>% 
+select(medication_class, generic_name, code_value)
+
+chronic_pain_medication_codeset %>% 
+head(30)  %>% 
+  display_gt_basic()
+
+# Cell 32
+chronic_pain_medication_codeset  <- fread(here::here(dataLoc, "chronic_pain_medication_codeset.csv"))  %>% 
+rename(code_value = multum_code)   %>% 
+select(medication_class, generic_name, code_value, target_formulation, code_confirmed)
+
+chronic_pain_medication_codeset %>% 
+head(30)  %>% 
+  display_gt_basic()
+
+# Cell 33
+chronic_pain_medication_codeset_limited  <- 
+chronic_pain_medication_codeset  %>% 
+filter( ! code_value %in% c('d00233', 'd00308', 'd00255', 'd00329'))
+
+# Cell 34
+medication_chronic_pain_proxy  <- tar_read(medication_encountermeasures)   %>% 
+mutate(code_system = 'medications',code_value = drugcode_standard_id) %>% 
+inner_join(chronic_pain_medication_codeset_limited, by = 'code_value')  
+ 
+
+# Cell 35
+medication_chronic_pain_proxy   %>% 
+head(20)  %>% 
+  display_gt_basic()
+
+# Cell 36
+medication_chronic_pain_proxy  %>% 
+group_by(medication_class, generic_name, code_value, target_formulation, code_confirmed)  %>% 
+summarize(pat_count = n_distinct(personid), .groups = 'drop') %>% 
+arrange(desc(pat_count))
+
+# Cell 37
+organ_severity  %>% 
+group_by(personid, organ_system, shah_organ_damage_level)  %>% 
+summarize(count = n())   %>% 
+count(shah_organ_damage_level, count)
+
+# Markdown Cell 38
+"""
+## Labs
+"""
+
+# Cell 39
+end_organ_damage_codeset_regex  <- fread(here::here(dataLoc, 'end-organ-damage-codeset-regex.csv'))  %>% 
+filter(code_system == "LOINC")  %>% 
+filter(str_detect(feature,'eGFR|ACR'))
+
+
+
+end_organ_damage_codeset_regex  %>% 
+head(20)  %>% 
+  display_gt_basic()
+
+# Cell 40
+tar_read(Lab_LOINCEncounterBaseline)  %>% names()
+
+# Cell 41
+tar_read(Lab_LOINCEncounterBaseline) 
+head(20)  %>% 
+  display_gt_basic()
+
+# Cell 43
+loinc_counts  <- tar_read(lab_loinc_encounter_demo_baseline)  %>% 
+mutate(code_system = 'LOINC')  %>% 
+group_by(test,code_system)  %>% 
+summarize(count = n_distinct(personid),.groups = 'drop')   %>% 
+arrange(desc(count))  %>% 
+head(200)  %>% 
+  display_gt_basic()
+
+# Markdown Cell 44
+"""
+### a LOINC Code
+
+- eGFR,48642-3,Glomerular filtration rate estimated from serum creatinine
+"""
+
+# Cell 45
+tar_read(Lab_LOINCEncounterBaseline)  %>% 
+head()
+
+# Cell 46
+tar_read(Lab_LOINCEncounterBaseline)  %>% 
+filter(labcode_standard_id == '48642-3')
+
+# Cell 47
+tar_read(lab_loinc_encounter_demo_baseline)  %>% 
+filter(labcode_standard_id == '48642-3')
+
+# Cell 49
+loinc_counts  <- tar_read(lab_loinc_encounter_demo_baseline)  %>% 
+mutate(code_system = 'LOINC')  %>% 
+group_by(test,code_system, labcode_standard_id)  %>% 
+summarize(count = n_distinct(personid),.groups = 'drop')   %>% 
+arrange(desc(count))  %>% 
+filter(str_detect(test, 'GFR'))
+
+# Cell 50
+tar_read(labFeaturesBaselineStd)  %>% names()
+
+# Cell 51
+tar_read(lab_features_list)
+
+# Cell 52
+tar_read(lab_average_features_list)
+
+# Cell 53
+48642-3
+
+# Cell 54
+tar_read(labs_factable)  %>% 
+filter(str_detect(labcode_standard_id, '48642-3'))
+
+# Cell 56
+tar_read(labs_factable)  %>% 
+filter(str_detect(labcode_standard_primaryDisplay, "filtration|Creatinine")) %>% 
+arrange(desc(N))  %>% 
+  display_gt_basic()  
+
+# Cell 57
+tar_read(Lab_LOINCEncounterBaseline) %>% 
+filter(labcode_standard_id == '41653-7')
+
+# Cell 58
+tar_read(lab_loinc_encounter_demo_baseline) %>% 
+filter(labcode_standard_id == '41653-7')
+
+# Cell 60
+loinc_counts  <- tar_read(Lab_LOINCEncounterBaseline) %>% 
+mutate(code_system = 'LOINC')  %>% 
+group_by(code_system, labcode_standard_id)  %>% 
+summarize(count = n_distinct(personid))   %>% 
+arrange(desc(count))  %>% 
+inner_join(end_organ_damage_codeset_regex, by = c('code_system')) %>% 
+filter(str_detect(labcode_standard_id, regex_pattern))
+
+loinc_counts  %>% 
+head(20)  %>% 
+  display_gt_basic()
+
+# Cell 61
+tar_read(Lab_LOINCEncounterBaseline) %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Cell 64
+tar_read(lab_loinc_encounter_demo_baseline)  %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Markdown Cell 65
+"""
+## VasOcclusive Pain Episode or Crisis
+"""
+
+# Cell 66
+vaso  <-  fread(here::here(dataLoc, 'sickleConditionEncounter_SCD_RWD.csv'))  
+
+vaso  %>% 
+head(5)  %>% 
+  display_gt_basic()
+
+# Cell 67
+vaso_index  <- vaso  %>% 
+group_by(conditioncode_standard_primaryDisplay, conditioncode_standard_id)  %>% 
+summarize(pt_count = n_distinct(personid), .groups = 'drop')  %>% 
+arrange(desc(pt_count))
+
+
+vaso_index  %>% 
+filter(str_detect(conditioncode_standard_primaryDisplay, 'with crisis'))  %>% 
+head(40) %>% 
+display_gt_basic()
+
+# Cell 68
+vaso_conditions  <- 
+vaso  %>% 
+inner_join(vaso_index, by = c('conditioncode_standard_primaryDisplay', 'conditioncode_standard_id'))   %>% 
+select(personid, tenant, conditioncode_standard_primaryDisplay, conditioncode_standard_id, datetimeCondition)  %>% 
+filter(!is.na(datetimeCondition))
+
+
+vaso_conditions  %>% 
+head(5) %>% 
+display_gt_basic()
+
+# Markdown Cell 69
+"""
+## Apply the Disease Severity Logic
+"""
+
+# Cell 70
+serverity_matrix  <- fread(here::here(dataLoc, 'smith_shah_severity_matrix.csv'))  %>% 
+  pivot_longer(
+    cols = c(`Under 8`, `8–15`, `16–24`, `25–40`, `Over 40`),
+    names_to = "age_group",
+    values_to = "severity_class"
+  )
+
+
+serverity_matrix  %>% 
+display_gt_basic()
+
+# Cell 71
+ads1  <-  tar_read(ads_with_features)  %>% 
+select(personid, tenant, deceased, followdate, first_touch_date, index_encounter, followtime, age_at_first_touch, age, group, 
+       population2, time_from_first_touch_to_death_event, death_event, vaso_occlusive_pain_crisis )  
+
+ads1 %>% 
+
+head(2) %>% 
+display_gt_basic()
+
+
+# Cell 72
+# Helper function: flag independent VOC episodes (first event in each 14+ day gap)
+flag_independent_vocs <- function(dates, gap_days = 14) {
+  n <- length(dates)
+  if (n == 0) return(logical(0))
+  if (n == 1) return(TRUE)
+  
+  keep <- logical(n)
+  keep[1] <- TRUE
+  last_kept_date <- dates[1]
+  
+  for (i in 2:n) {
+    if (as.numeric(dates[i] - last_kept_date) > gap_days) {
+      keep[i] <- TRUE
+      last_kept_date <- dates[i]
+    }
+  }
+  keep
+}
+
+vaso_id <- vaso_conditions %>% 
+  inner_join(
+    ads1 %>% select(personid, index_encounter), 
+    by = c('personid')
+  ) %>%
+  mutate(vaso_date = as.Date(datetimeCondition)) %>% 
+  filter(
+    vaso_date >= index_encounter,
+    vaso_date < index_encounter + lubridate::years(1)
+  ) %>%
+  arrange(personid, vaso_date) %>%
+  group_by(personid) %>%
+  mutate(is_independent = flag_independent_vocs(vaso_date, gap_days = 14)) %>%
+  filter(is_independent) %>%
+  summarize(
+    first_vaso_date = min(vaso_date), 
+    voc_episode_count = n(),
+    .groups = 'drop'
+  ) %>% 
+  mutate(
+    voc_category = case_when(
+      voc_episode_count <= 1                          ~ '0–1',
+      voc_episode_count >= 2 & voc_episode_count <= 4 ~ '2–4',
+      voc_episode_count >= 5                          ~ '≥5'
+    )
+  )
+
+# Cell 73
+tar_read(conditions)  %>% 
+
+head(2)  %>% 
+  display_gt_basic()
+
+# Cell 74
+# Conditions
+organ_severity %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+# Cell 75
+organ_severity %>% 
+count(shah_organ_damage_level)
+
+# Cell 76
+# Medication
+medication_chronic_pain_proxy  %>% 
+head(2)  %>% 
+  display_gt_basic()
+
+
+# Cell 77
+chronic_pain_index  <- medication_chronic_pain_proxy  %>% 
+mutate(chronic_pain = TRUE)  %>% 
+select(personid, chronic_pain)  %>% 
+distinct()
+
+chronic_pain_index  %>% 
+head()  %>% 
+display_gt_basic()
+
+# Cell 78
+vaso_id  %>% 
+head(2) %>% 
+display_gt_basic()
+
+# Cell 79
+ads1  %>% names()
+
+# Cell 80
+vaso_id  %>% names()
+
+# Cell 81
+severity_matrix_2  <- serverity_matrix  %>% 
+rename(voc_category = 'VOC Visits (last year)',
+       chronic_pain = 'Chronic Pain')   %>% 
+mutate(chronic_pain = (chronic_pain == 'Yes'))  %>% 
+rename(end_organ_damage = `End Organ Damage`)
+
+severity_matrix_2 %>% 
+names()
+
+# Cell 82
+severity_matrix_2  %>% 
+head(1)
+
+# Cell 83
+severity_matrix_2  %>% 
+count(end_organ_damage)
+
+# Markdown Cell 85
+"""
+## End Organ Damage
+
+- 
+"""
+
+# Cell 86
+ads  <- ads1  %>% 
+left_join(vaso_id, by = c('personid'))  %>% 
+mutate(voc_category = ifelse(is.na(voc_category), '0-1', voc_category))  %>% 
+mutate(age_group = case_when(
+    age < 8              ~ 'Under 8',
+    age >= 8 & age < 16 ~ '8-15',
+    age >=16 & age < 25  ~ '16 - 24',
+    age >=25            ~ 'Over 40'
+))  %>% 
+left_join(chronic_pain_index, by = c('personid'))  %>% 
+mutate(chronic_pain = coalesce(chronic_pain, FALSE))
+
+          
+
+ads %>% 
+head(10)  %>% 
+display_gt_basic()
+
+# Cell 87
+'systemic_hypertension', 'pulmonary hypertension', deep_venous_thrombosis, 'pulmonary_embolism', 
+'chronic_kidney_disease', sickle_cell_stroke' +'other_ill_defined_cerebrovascular_disease',  
+'other_ill'other_retinal_disorders' + 
+'sickle_cell_retinopathy',  'other_disorders_of_bone_and_cartilage' (AVN)
+
+# Cell 88
+tar_read(ads_with_features)  %>% 
+select(personid, systemic_hypertension, pulmonary_hypertension, 
+        ,deep_venous_thrombosis,
+       pulmonary_embolism, 
+       chronic_kidney_disease,
+       sickle_cell_stroke,
+       other_ill_defined_cerebrovascular_disease,
+       other_retinal_disorders,
+      sickle_cell_retinopathy, other_disorders_of_bone_and_cartilage
+      )  %>% 
+head(1)  %>% 
+display_gt_basic()
+
+# Cell 89
+tar_read(ads_with_features)  %>% 
+select(personid, systemic_hypertension, pulmonary_hypertension, 
+        ,deep_venous_thrombosis,
+       pulmonary_embolism, 
+       chronic_kidney_disease,
+       sickle_cell_stroke,
+       other_ill_defined_cerebrovascular_disease,
+       other_retinal_disorders,
+      sickle_cell_retinopathy, other_disorders_of_bone_and_cartilage
+      )  %>% 
+pivot_longer(cols = -personid, values_to = 'present')  %>% 
+group_by(present)  %>% 
+summarize(pat_count = n_distinct(personid),.groups = 'drop')
+
+# Cell 90
+tar_read(ads_with_features)  %>% 
+select(personid, systemic_hypertension, pulmonary_hypertension, 
+        ,deep_venous_thrombosis,
+       pulmonary_embolism, 
+       chronic_kidney_disease,
+       sickle_cell_stroke,
+       other_ill_defined_cerebrovascular_disease,
+       other_retinal_disorders,
+      sickle_cell_retinopathy, other_disorders_of_bone_and_cartilage
+      )  
+
+# Cell 91
+# Suggested approach using encounters data
+create_voc_visit_count <- function(encounters_data, baseline_period = 365) {
+  # VOC-related ICD10 codes from your condition data
+  voc_codes <- c(
+    "D57.0",   # HbSS with crisis
+    "D57.21",  # HbSC with crisis  
+    "D57.41",  # HbSD with crisis
+    "D57.81",  # Other HbS disorders with crisis
+    # Add priapism, ACS, splenic/hepatic sequestration codes
+    "N48.3",   # Priapism
+    "D57.01",  # HbSS with ACS
+    # etc.
+  )
+  
+  # Count unscheduled acute care visits in baseline year
+  encounters_data %>%
+    filter(
+      # Filter to unscheduled/acute encounters
+      encounter_type %in% c("ED", "Inpatient", "Urgent Care"),
+      # With VOC-related diagnosis
+      condition_code %in% voc_codes,
+      # Within baseline period from index
+      date_encounter <= index_encounter + days(baseline_period)
+    ) %>%
+    group_by(personid) %>%
+    summarize(voc_visit_count = n_distinct(encounterid))
+}
+
+# Cell 92
+create_chronic_pain_proxy <- function(conditions_data, medication_data) {
+  # ICD10 codes suggesting chronic pain
+  chronic_pain_codes <- c(
+    "G89.29",  # Other chronic pain
+    "G89.4",   # Chronic pain syndrome
+    "R52"      # Pain, unspecified (if chronic qualifier)
+  )
+  
+  conditions_data %>%
+    filter(str_detect(conditioncode_standard_id, 
+                      paste(chronic_pain_codes, collapse = "|"))) %>%
+    distinct(personid) %>%
+    mutate(has_chronic_pain_proxy = TRUE)
+}
+
+# Cell 93
+# CKD-EPI equation (more accurate than MDRD for eGFR > 60)
+   calculate_egfr_ckd_epi <- function(creatinine, age, is_female, is_black) {
+     kappa <- if_else(is_female, 0.7, 0.9)
+     alpha <- if_else(is_female, -0.329, -0.411)
+     
+     141 * 
+       pmin(creatinine/kappa, 1)^alpha *
+       pmax(creatinine/kappa, 1)^(-1.209) *
+       0.993^age *
+       if_else(is_female, 1.018, 1) *
+       if_else(is_black, 1.159, 1)  # Note: 2021 guidance removes race
+   }
+
+# Cell 94
+calculate_egfr_ckd_epi
+
+# Cell 95
+# Shah Classification - Simplified Approximation
+# Uses existing binary indicators from ads_with_features
+# 
+# Mapping Logic (per user specification):
+#   Cardiopulmonary: pulmonary_hypertension → severe; others → mild/moderate
+#   Kidney: chronic_kidney_disease → severe
+#   Brain: stroke/cerebrovascular → severe
+#   Bone/Retina: any presence → "Severe Bone/Retina" category
+
+library(tidyverse)
+
+#' Create Shah organ damage category from binary indicators
+#'
+#' @param data Dataset with binary condition indicators (e.g., ads_with_features)
+#' @return Dataset with shah_end_organ_damage column added
+#' @export
+create_shah_organ_damage_approx <- function(data) {
+  
+
+  data %>%
+    mutate(
+      # --- Cardiopulmonary Assessment ---
+      # Severe: pulmonary HTN
+      cardio_severe = coalesce(pulmonary_hypertension, FALSE),
+      
+      # Mild/Moderate: systemic HTN, DVT, PE (but not pulmonary HTN)
+      cardio_mild_mod = (
+        coalesce(systemic_hypertension, FALSE) |
+        coalesce(deep_venous_thrombosis, FALSE) |
+        coalesce(pulmonary_embolism, FALSE)
+      ) & !cardio_severe,
+      
+      # --- Kidney Assessment ---
+      # Severe: any CKD (conservative - can't distinguish stages)
+      kidney_severe = coalesce(chronic_kidney_disease, FALSE),
+      
+      # --- Brain Assessment ---
+      # Severe: stroke or cerebrovascular disease
+      brain_severe = (
+        coalesce(sickle_cell_stroke, FALSE) |
+        coalesce(other_ill_defined_cerebrovascular_disease, FALSE)
+      ),
+      
+      # --- Bone/Retina Assessment ---
+      # Treating any bone/retina finding as "Severe Bone/Retina" category
+      # (Shah has this as distinct from HLKB)
+      bone_retina_present = (
+        coalesce(other_disorders_of_bone_and_cartilage, FALSE) |
+        coalesce(sickle_cell_retinopathy, FALSE) |
+        coalesce(other_retinal_disorders, FALSE)
+      ),
+      
+      # --- Aggregate to Shah Categories ---
+      # "Severe HLKB" = severe damage to Heart, Lung, Kidney, or Brain
+      has_severe_hlkb = (
+        cardio_severe |
+        kidney_severe |
+        brain_severe
+      ),
+      
+      # "Severe Bone/Retina" = distinct category in Shah
+      has_severe_bone_retina = bone_retina_present,
+      
+      # "Mild/Moderate" = cardiopulmonary mild/mod without any severe
+      has_mild_moderate_only = cardio_mild_mod & !has_severe_hlkb & !has_severe_bone_retina,
+      
+      # --- Final Shah End Organ Damage Category ---
+      # Priority: Severe HLKB > Severe Bone/Retina > Mild/Moderate > None
+      shah_end_organ_damage = case_when(
+        has_severe_hlkb ~ "Severe HLKB",
+        has_severe_bone_retina ~ "Severe Bone/Retina",
+        has_mild_moderate_only ~ "Mild/Moderate",
+        TRUE ~ "None"
+      )
+    )
+}
+
+#' Create age group for Shah classification
+#'
+#' @param age Numeric age (typically age_at_first_touch)
+#' @return Character age group
+#' @export
+create_shah_age_group <- function(age) {
+  case_when(
+    age < 8 ~ "under_8",
+    age >= 8 & age <= 15 ~ "8_15",
+    age >= 16 & age <= 24 ~ "16_24",
+    age >= 25 & age <= 40 ~ "25_40",
+    age > 40 ~ "over_40",
+    TRUE ~ NA_character_
+  )
+}
+
+#' Create VOC visit category for Shah classification
+#'
+#' @param voc_count Integer count of VOC visits in past year
+#' @return Character category
+#' @export
+create_shah_voc_category <- function(voc_count) {
+  case_when(
+    is.na(voc_count) | voc_count <= 1 ~ "0-1",
+    voc_count >= 2 & voc_count <= 4 ~ "2-4",
+    voc_count >= 5 ~ "5+",
+    TRUE ~ NA_character_
+  )
+}
+
+#' Load Shah severity matrix as long-format truth table
+#'
+#' @param matrix_path Path to Smith_Shah_Severity_Matrix.csv
+#' @return Tibble ready for joining
+#' @export
+load_shah_matrix_long <- function(matrix_path) {
+  
+  read_csv(matrix_path, show_col_types = FALSE) %>%
+    rename(
+      end_organ_damage = `End Organ Damage`,
+      chronic_pain = `Chronic Pain`,
+      voc_visits = `VOC Visits (last year)`
+    ) %>%
+    pivot_longer(
+      cols = c(`Under 8`, `8–15`, `16–24`, `25–40`, `Over 40`),
+      names_to = "age_group_raw",
+      values_to = "shah_class"
+    ) %>%
+    mutate(
+      # Standardize for joining
+      chronic_pain_flag = (chronic_pain == "Yes"),
+      voc_category = case_when(
+        voc_visits == "0–1" ~ "0-1",
+        voc_visits == "2–4" ~ "2-4",
+        voc_visits == "≥5" ~ "5+",
+        TRUE ~ voc_visits
+      ),
+      age_group = case_when(
+        age_group_raw == "Under 8" ~ "under_8",
+        age_group_raw == "8–15" ~ "8_15",
+        age_group_raw == "16–24" ~ "16_24",
+        age_group_raw == "25–40" ~ "25_40",
+        age_group_raw == "Over 40" ~ "over_40"
+      )
+    ) %>%
+    select(
+      end_organ_damage,
+      chronic_pain_flag,
+      voc_category,
+      age_group,
+      shah_class
+    )
+}
+
+#' Apply Shah classification via truth table merge
+#'
+#' @param patient_data Dataset with shah_end_organ_damage, age, and ideally 
+#'                     voc_visit_count and has_chronic_pain
+#' @param shah_matrix Output from load_shah_matrix_long()
+#' @return Dataset with shah_class column
+#' @export
+apply_shah_classification_approx <- function(patient_data, shah_matrix) {
+  
+
+  patient_data %>%
+    mutate(
+      # Create join keys
+      age_group = create_shah_age_group(age_at_first_touch),
+      voc_category = create_shah_voc_category(voc_visit_count),
+      end_organ_damage = shah_end_organ_damage,
+      chronic_pain_flag = coalesce(has_chronic_pain, FALSE)
+    ) %>%
+    left_join(
+      shah_matrix,
+      by = c("end_organ_damage", "chronic_pain_flag", "voc_category", "age_group")
+    ) %>%
+    select(-end_organ_damage, -chronic_pain_flag, -voc_category, -age_group)
+}
+
+#' Full Shah classification pipeline (simplified approximation)
+#'
+#' @param ads_with_features Dataset with binary condition indicators
+#' @param shah_matrix_path Path to severity matrix CSV
+#' @param voc_data Optional: patient-level VOC counts (personid, voc_visit_count)
+#' @param chronic_pain_data Optional: patient-level chronic pain (personid, has_chronic_pain)
+#' @return Classified dataset
+#' @export
+create_shah_classification_approx <- function(
+  ads_with_features,
+  shah_matrix_path,
+  voc_data = NULL,
+  chronic_pain_data = NULL
+) {
+  
+
+  # Load truth table
+  shah_matrix <- load_shah_matrix_long(shah_matrix_path)
+  
+  # Start with organ damage mapping
+  result <- ads_with_features %>%
+    create_shah_organ_damage_approx()
+  
+  # Add VOC data if provided, otherwise assume 0
+
+result <- if (!is.null(voc_data)) {
+    result %>%
+      left_join(voc_data, by = "personid") %>%
+      mutate(voc_visit_count = coalesce(voc_visit_count, 0L))
+  } else {
+    result %>%
+      mutate(voc_visit_count = 0L)  # ASSUMPTION: no VOC data
+  }
+  
+  # Add chronic pain if provided, otherwise assume FALSE
+  result <- if (!is.null(chronic_pain_data)) {
+    result %>%
+      left_join(chronic_pain_data, by = "personid") %>%
+      mutate(has_chronic_pain = coalesce(has_chronic_pain, FALSE))
+  } else {
+    result %>%
+      mutate(has_chronic_pain = FALSE)  # ASSUMPTION: no chronic pain data
+  }
+  
+  # Apply classification
+  result %>%
+    apply_shah_classification_approx(shah_matrix)
+}
+
+#' Validate Shah classification results
+#'
+#' @param classified_data Output from create_shah_classification_approx()
+#' @return List of summary tables
+#' @export
+validate_shah_classification_approx <- function(classified_data) {
+  
+  # Overall distribution
+  class_dist <- classified_data %>%
+    count(shah_class, name = "n") %>%
+    mutate(pct = round(n / sum(n) * 100, 1))
+  
+  # By organ damage category
+  by_organ <- classified_data %>%
+    count(shah_end_organ_damage, shah_class) %>%
+    pivot_wider(names_from = shah_class, values_from = n, values_fill = 0)
+  
+  # By age group
+  by_age <- classified_data %>%
+    mutate(age_group = create_shah_age_group(age_at_first_touch)) %>%
+    count(age_group, shah_class) %>%
+    pivot_wider(names_from = shah_class, values_from = n, values_fill = 0)
+  
+  # Component flags summary
+  component_summary <- classified_data %>%
+    summarize(
+      n_total = n(),
+      n_cardio_severe = sum(cardio_severe, na.rm = TRUE),
+      n_cardio_mild_mod = sum(cardio_mild_mod, na.rm = TRUE),
+      n_kidney_severe = sum(kidney_severe, na.rm = TRUE),
+      n_brain_severe = sum(brain_severe, na.rm = TRUE),
+      n_bone_retina = sum(bone_retina_present, na.rm = TRUE),
+      n_severe_hlkb = sum(has_severe_hlkb, na.rm = TRUE),
+      n_severe_bone_retina = sum(has_severe_bone_retina, na.rm = TRUE),
+      n_mild_mod_only = sum(has_mild_moderate_only, na.rm = TRUE),
+      n_no_organ_damage = sum(shah_end_organ_damage == "None", na.rm = TRUE)
+    )
+  
+  # Check for missing classifications
+  missing_check <- classified_data %>%
+    filter(is.na(shah_class)) %>%
+    count(shah_end_organ_damage, voc_visit_count, has_chronic_pain,
+          age_group = create_shah_age_group(age_at_first_touch))
+  
+  list(
+    class_distribution = class_dist,
+    by_organ_damage = by_organ,
+    by_age_group = by_age,
+    component_counts = component_summary,
+    missing_classifications = missing_check,
+    assumptions = tibble(
+      variable = c("voc_visit_count", "has_chronic_pain", "CKD staging", "Bone/Retina severity"),
+      assumption = c(
+        "Set to 0 if not provided",
+        "Set to FALSE if not provided", 
+        "All CKD treated as severe (can't distinguish stages)",
+        "All bone/retina findings treated as 'Severe Bone/Retina' category"
+      )
+    )
+  )
+}
+
+# Cell 96
+tar_read(ads_with_features)  %>% 
+
+# Cell 97
+shah  <- tar_read(ads_with_features)  %>% 
+select(personid, systemic_hypertension, pulmonary_hypertension, 
+        ,deep_venous_thrombosis,
+       pulmonary_embolism, 
+       chronic_kidney_disease,
+       sickle_cell_stroke,
+       other_ill_defined_cerebrovascular_disease,
+       other_retinal_disorders,
+      sickle_cell_retinopathy, other_disorders_of_bone_and_cartilage
+      )    %>% 
+create_shah_organ_damage_approx  
+
+# Markdown Cell 98
+"""
+## Create Final Table
+"""
+
+# Cell 99
+scd_severity_class  <- ads  %>% 
+left_join(shah, by = c('personid'))  
+
+# Cell 100
+scd_severity_class  %>% sapply('class')
+
+# Cell 102
+scd_severity_class  %>% count(shah_end_organ_damage, deceased)
+
+# Cell 103
+scd_severity_class  %>% 
+select(age, age_group) %>% 
+filter(is.na(age))
+
+# Cell 104
+# Run this to see if keys will match:
+scd_severity_class %>% distinct(age_group)
+scd_severity_class %>% distinct(voc_category)
+scd_severity_class %>% distinct(shah_end_organ_damage)
+
+# Cell 105
+tar_read(ads_with_features)  %>% names()
+
+# Cell 106
+tar_read(ads_with_features)  %>% 
+select(age, yearofbirth)  %>% 
+filter(is.na(age))
+
+# Cell 107
+scd_severity_class  %>% names()
+
+# Cell 108
+# Standardize function - converts all dash variants to simple hyphen, removes spaces
+standardize_keys <- function(x) {
+  x %>%
+    str_replace_all("–", "-") %>%  # en-dash to hyphen
+    str_replace_all("—", "-") %>%  # em-dash to hyphen
+    str_replace_all("\\s+-\\s+", "-") %>%  # " - " to "-"
+    str_replace_all("≥", "5+") %>%
+    str_trim()
+}
+
+# Step 1: Impute FALSE for all logical NAs
+logical_cols <- scd_severity_class %>%
+  select(where(is.logical)) %>%
+  names()
+
+scd_severity_class <- scd_severity_class %>%
+  mutate(across(all_of(logical_cols), ~ coalesce(.x, FALSE)))
+
+# Step 2: Standardize join keys in your data
+scd_severity_class <- scd_severity_class %>%
+  mutate(
+    age_group_std = case_when(
+      is.na(age_group) ~ NA_character_,
+      str_detect(age_group, "Under|under|<\\s*8") ~ "under_8",
+      str_detect(age_group, "8.*15") ~ "8_15",
+      str_detect(age_group, "16.*24") ~ "16_24",
+      str_detect(age_group, "25.*40") ~ "25_40",
+      str_detect(age_group, "Over|over|>\\s*40") ~ "over_40",
+      TRUE ~ age_group
+    ),
+    voc_category_std = case_when(
+      is.na(voc_category) ~ "0-1",  # Default assumption
+      str_detect(voc_category, "^0") ~ "0-1",
+      str_detect(voc_category, "^2") ~ "2-4",
+      str_detect(voc_category, "5|≥") ~ "5+",
+      TRUE ~ voc_category
+    )
+  )
+
+# Step 3: Prepare severity matrix with matching keys
+severity_matrix <- fread(here::here(dataLoc, 'smith_shah_severity_matrix.csv')) %>%
+  pivot_longer(
+    cols = c(`Under 8`, `8–15`, `16–24`, `25–40`, `Over 40`),
+    names_to = "age_group_raw",
+    values_to = "severity_class"
+  ) %>%
+  rename(
+    end_organ_damage = `End Organ Damage`,
+    chronic_pain_txt = `Chronic Pain`,
+    voc_category_raw = `VOC Visits (last year)`
+  ) %>%
+  mutate(
+    chronic_pain = (chronic_pain_txt == "Yes"),
+    age_group_std = case_when(
+      str_detect(age_group_raw, "Under") ~ "under_8",
+      str_detect(age_group_raw, "8") ~ "8_15",
+      str_detect(age_group_raw, "16") ~ "16_24",
+      str_detect(age_group_raw, "25") ~ "25_40",
+      str_detect(age_group_raw, "Over") ~ "over_40"
+    ),
+    voc_category_std = case_when(
+      str_detect(voc_category_raw, "^0") ~ "0-1",
+      str_detect(voc_category_raw, "^2") ~ "2-4",
+      str_detect(voc_category_raw, "5|≥") ~ "5+"
+    )
+  ) %>%
+  select(end_organ_damage, chronic_pain, voc_category_std, age_group_std, severity_class)
+
+# Step 4: Verify alignment before join
+# scd_severity_class %>% count(age_group_std)
+# scd_severity_class %>% count(voc_category_std)
+# severity_matrix %>% count(age_group_std)
+# severity_matrix %>% count(voc_category_std)
+
+# Step 5: Join
+scd_severity_classified <- scd_severity_class %>%
+  left_join(
+    severity_matrix,
+    by = c(
+      "shah_end_organ_damage" = "end_organ_damage",
+      "chronic_pain" = "chronic_pain",
+      "voc_category_std" = "voc_category_std",
+      "age_group_std" = "age_group_std"
+    )
+  )
+
+scd_severity_classified <- scd_severity_classified %>%
+  mutate(
+    severity_class = case_when(
+      # Override: ≥5 VOC visits is always Class III (per Shah Figure 3)
+      voc_category_std == "5+" ~ "Class III",
+      # Otherwise use matrix result
+      TRUE ~ severity_class
+    )
+  )
+
+# Step 6: Validate
+scd_severity_classified %>%
+  count(severity_class, name = "n") %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+# Check failures (should be only where age_group was NA)
+scd_severity_classified %>%
+  filter(is.na(severity_class)) %>%
+  count(shah_end_organ_damage, chronic_pain, voc_category_std, age_group_std)
+
+# Cell 109
+library(gtsummary)
+
+# Cell 110
+# Merge demographics from ads_with_features
+scd_severity_demo <- scd_severity_classified %>%
+  filter(!is.na(severity_class)) %>%
+  left_join(
+    tar_read(ads_with_features) %>%
+      select(
+        personid, tenant,
+        gender, race, ethnicity,
+        person_phenotype, scd,
+        hydroxyurea, transplant,
+        state, metropolitan, urban
+      ),
+    by = c("personid", "tenant")
+  )
+
+# Cell 111
+scd_severity_demo %>%
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = severity_class,
+    label = list(
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Genotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Markdown Cell 112
+"""
+## Make another table that is only SCD patients.  
+
+how to identify SCD patients form the table ads_with_features. 
+ - use field `scd`
+"""
+
+# Cell 113
+tar_read(ads_with_features)  %>% count(scd)
+
+# Cell 114
+scd_severity_demo %>%
+  filter(scd)  %>% 
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = severity_class,
+    label = list(
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Genotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Markdown Cell 115
+"""
+## Redo Table for Population 2, People with at least one year of care.
+"""
+
+# Cell 116
+scd_severity_demo %>%
+  filter(scd)  %>% 
+  filter(population2)  %>% 
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = severity_class,
+    label = list(
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Genotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Cell 117
+scd_severity_demo  %>% count(person_phenotype)
+
+# Cell 118
+scd_severity_demo %>%
+  filter(scd)  %>% 
+  filter(population2)  %>% 
+  mutate(pheno_group = case_when(
+      person_phenotype %in% c('SCD_SCA', 'SCD_SCA_Likely') ~ 'SCA',
+      person_phenotype %in% c('SCD_SC')                    ~ 'SC', 
+      person_phenotype %in% c('SCD_Sbetap_Likely')         ~ 'S beta Plus',
+      TRUE                                                 ~ 'other'
+  )) %>% 
+  filter(pheno_group != 'other')  %>%
+  filter(severity_class == 'Class I')  %>% 
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    pheno_group,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = pheno_group,
+    label = list(
+      severity_class ~ "Severity Class",
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Phenotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Cell 119
+scd_severity_demo %>%
+  filter(scd)  %>% 
+  filter(population2)  %>% 
+  mutate(pheno_group = case_when(
+      person_phenotype %in% c('SCD_SCA', 'SCD_SCA_Likely') ~ 'SCA',
+      person_phenotype %in% c('SCD_SC')                    ~ 'SC', 
+      person_phenotype %in% c('SCD_Sbetap_Likely')         ~ 'S beta Plus',
+      TRUE                                                 ~ 'other'
+  )) %>% 
+  filter(pheno_group != 'other')  %>%
+  filter(severity_class == 'Class II')  %>% 
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    pheno_group,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = pheno_group,
+    label = list(
+      severity_class ~ "Severity Class",
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Phenotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Cell 120
+scd_severity_demo %>%
+  filter(scd)  %>% 
+  filter(population2)  %>% 
+  mutate(pheno_group = case_when(
+      person_phenotype %in% c('SCD_SCA', 'SCD_SCA_Likely') ~ 'SCA',
+      person_phenotype %in% c('SCD_SC')                    ~ 'SC', 
+      person_phenotype %in% c('SCD_Sbetap_Likely')         ~ 'S beta Plus',
+      TRUE                                                 ~ 'other'
+  )) %>% 
+  filter(pheno_group != 'other')  %>%
+  filter(severity_class == 'Class III')  %>% 
+  select(
+    severity_class,
+    age_at_first_touch,
+    gender,
+    race,
+    pheno_group,
+    person_phenotype,
+    shah_end_organ_damage,
+    voc_category_std,
+    chronic_pain,
+    hydroxyurea,
+    transplant,
+    death_event
+  ) %>%
+  tbl_summary(
+    by = pheno_group,
+    label = list(
+      severity_class ~ "Severity Class",
+      age_at_first_touch ~ "Age at Index",
+      gender ~ "Sex",
+      race ~ "Race",
+      person_phenotype ~ "SCD Phenotype",
+      shah_end_organ_damage ~ "End Organ Damage",
+      voc_category_std ~ "VOC Visits (baseline year)",
+      chronic_pain ~ "Chronic Pain",
+      hydroxyurea ~ "Hydroxyurea",
+      transplant ~ "Transplant",
+      death_event ~ "Mortality"
+    ),
+    type = list(
+      age_at_first_touch ~ "continuous2",
+      transplant ~ "dichotomous"
+    ),
+    statistic = list(
+      age_at_first_touch ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]")
+    ),
+    percent = "column",
+    missing = "ifany"
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    ),
+    pvalue_fun = ~ style_pvalue(.x, digits = 2)
+  ) %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Shah Severity Class**") %>%
+  modify_caption("**Table 1. Patient Characteristics by Shah Severity Classification**") %>%
+  bold_labels()  %>% 
+as_html()
+
+# Cell 123
+tar_read(ads_with_features)  %>% names()
+
+# Markdown Cell 138
+"""
+## Stop
+"""
+
+# Cell 140
+create_shah_organ_damage_approx
+
+# Cell 141
+tar_read(ads_with_features)  %>% names
+
+# Cell 142
+'systemic_hypertension', 'pulmonary hypertension', deep_venous_thrombosis, 'pulmonary_embolism', 'chronic_kidney_disease', s'ickle_cell_stroke' +'other_ill_defined_cerebrovascular_disease',  'other_ill'other_retinal_disorders' + 'sickle_cell_retinopathy',  'other_disorders_of_bone_and_cartilage' (AVN)
+ 
+
+# Cell 143
+tar_read(comorbidity_ConditionEncounter)  %>% 
+group_by(conditioncode_standard_primary_display, conditioncode_standard_id,conditioncode_standard_coding_system_id )  %>% 
+summarize(pat_count = n_distinct(personid))
+
+# Cell 144
+tar_read(comorbidity_ConditionEncounter)  %>% 
+head()
+
+# Cell 145
+tar_read(condition_factable)  %>% 
+head()
+
+# Cell 146
+problemcode_standard_id
+
+# Cell 147
+tar_read(vital_sign_encountermeasures)  %>% 
+filter(str_detect(measurementcode_standard_id, '96'))  %>% 
+head(20)  %>% 
+display_gt_basic()
+
+# Cell 148
+tar_read(vital_sign_encountermeasures)  %>% 
+head(20)  %>% 
+display_gt_basic()
+
+# Cell 150
+spo2_codes <- c("59408-5", "59417-6", "20564-1")
+tar_read(vital_sign_encountermeasures)  %>% 
+filter(measurementcode_standard_id %in% spo2_codes) %>% 
+ 
+head(20)  %>% 
+display_gt_basic()
+
+# Cell 151
+tar_read(condition_factable) %>%
+  filter(str_detect(conditioncode_standard_id, "^I10|^401"))  # I10 ICD10, 401 ICD9
+
+# Markdown Cell 153
+"""
+## ICD Codes
+
+- hypoxia ICD: 
+"""
+
+# Cell 155
+tar_read(comorbidity_ConditionEncounter)  %>% 
+filter(str_detect(conditioncode_standard_id, 'J9'))
+
+
+# Cell 156
+tar_read(comorbidity_ConditionEncounter)  %>% 
+
+filter(str_detect(conditioncode_standard_id, 'L97'))
+
+# Cell 157
+tar_read(conditions)  %>% 
+filter(str_detect(conditioncode_standard_id, 'J9'))
+
+# Cell 158
+tar_read(conditions)  %>% 
+filter(str_detect(conditioncode_standard_id, 'L97'))
+
+# Cell 159
+L97
+
+# Markdown Cell 160
+"""
+## Merge factable with Conditions
+"""
+
+# Cell 161
+# ============================================================================
+# Shah et al. (2020) Organ Damage Classification Functions
+# 
+# Implements severity classification based on:
+# "Development of a Severity Classification System for Sickle Cell Disease"
+# ClinicoEconomics and Outcomes Research 2020:12 625–633
+# ============================================================================
+
+library(tidyverse)
+
+# ============================================================================
+# 1. ICD-BASED ORGAN DAMAGE EXTRACTION
+# ============================================================================
+
+#' Extract Shah organ damage features from condition data using regex codeset
+#'
+#' @param condition_data Patient-level condition data (comorbidity_ConditionEncounter)
+#' @param codeset_path Path to end_organ_damage_codeset_regex.csv
+#' @param ads Reference table with personid/tenant for complete patient list
+#' @return Patient-level organ damage indicators with severity buckets
+#' @export
+create_shah_icd_features <- function(condition_data, codeset_path, ads) {
+  
+
+  # Load codeset configuration
+  codeset <- read_csv(codeset_path, show_col_types = FALSE) %>%
+    filter(code_system %in% c("ICD10CM", "ICD9CM", "SNOMED"))
+  
+  # Get unique patients from ads
+  patient_base <- ads %>%
+    select(personid, tenant) %>%
+    distinct()
+  
+  # Process each feature and create patient-level indicators
+  icd_features <- codeset %>%
+    # For each regex pattern, find matching conditions
+    pmap_dfr(function(feature, severity_bucket, organ_system, code_system, 
+                      regex_pattern, display_name, shah_organ_damage_level, notes) {
+      
+      matches <- condition_data %>%
+        filter(str_detect(conditioncode_standard_id, regex_pattern))
+      
+      if (nrow(matches) > 0) {
+        matches %>%
+          select(personid, tenant, conditioncode_standard_id, datetime_condition) %>%
+          mutate(
+            feature = feature,
+            severity_bucket = severity_bucket,
+            organ_system = organ_system,
+            shah_organ_damage_level = shah_organ_damage_level
+          )
+      } else {
+        # Return empty tibble with correct structure if no matches
+        tibble(
+          personid = character(),
+          tenant = character(),
+          conditioncode_standard_id = character(),
+          datetime_condition = as.POSIXct(character()),
+          feature = character(),
+          severity_bucket = character(),
+          organ_system = character(),
+          shah_organ_damage_level = character()
+        )
+      }
+    })
+  
+  # Get list of all features in codeset
+  all_features <- codeset %>%
+    filter(severity_bucket %in% c("mild_moderate", "severe")) %>%
+    pull(feature) %>%
+    unique()
+  
+  # Binary features (most ICD codes)
+  if (nrow(icd_features) > 0) {
+    binary_features <- icd_features %>%
+      filter(severity_bucket %in% c("mild_moderate", "severe")) %>%
+      select(personid, tenant, feature, shah_organ_damage_level) %>%
+      distinct() %>%
+      mutate(present = TRUE) %>%
+      pivot_wider(
+        id_cols = c(personid, tenant),
+        names_from = feature,
+        values_from = present,
+        values_fill = FALSE
+      )
+  } else {
+    binary_features <- patient_base
+  }
+  
+  # Ensure all expected features exist (even if no patients have them)
+  for (feat in all_features) {
+    if (!feat %in% names(binary_features)) {
+      binary_features[[feat]] <- FALSE
+    }
+  }
+  
+  # Count-dependent features (PE - need distinct event count)
+  # Use 30-day window to deduplicate same PE event
+  pe_data <- icd_features %>%
+    filter(severity_bucket == "count_dependent", feature == "PE")
+  
+  if (nrow(pe_data) > 0) {
+    pe_counts <- pe_data %>%
+      arrange(personid, tenant, datetime_condition) %>%
+      group_by(personid, tenant) %>%
+      mutate(
+        days_since_last = as.numeric(
+          difftime(datetime_condition, lag(datetime_condition), units = "days")
+        ),
+        new_event = is.na(days_since_last) | days_since_last > 30
+      ) %>%
+      summarise(
+        pe_event_count = sum(new_event),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        PE_mild_moderate = pe_event_count == 1,
+        PE_severe = pe_event_count > 1
+      )
+  } else {
+    pe_counts <- tibble(
+      personid = character(),
+      tenant = character(),
+      pe_event_count = integer(),
+      PE_mild_moderate = logical(),
+      PE_severe = logical()
+    )
+  }
+  
+  # Combine and join to full patient list
+  result <- patient_base %>%
+    left_join(binary_features, by = c("personid", "tenant")) %>%
+    left_join(
+      pe_counts %>% select(personid, tenant, pe_event_count, PE_mild_moderate, PE_severe),
+      by = c("personid", "tenant")
+    )
+  
+  # Fill NAs with FALSE/0
+  result <- result %>%
+    mutate(
+      across(where(is.logical), ~replace_na(.x, FALSE)),
+      pe_event_count = replace_na(pe_event_count, 0),
+      PE_mild_moderate = replace_na(PE_mild_moderate, FALSE),
+      PE_severe = replace_na(PE_severe, FALSE)
+    )
+  
+  return(result)
+}
+
+
+# ============================================================================
+# 2. LAB-BASED ORGAN DAMAGE EXTRACTION  
+# ============================================================================
+
+#' Extract Shah organ damage features from lab data
+#'
+#' @param lab_data Lab baseline data (Lab_LOINCEncounterBaseline)
+#' @param ads Reference table with personid/tenant
+#' @return Patient-level lab-derived organ damage indicators
+#' @export
+create_shah_lab_features <- function(lab_data, ads) {
+  
+  patient_base <- ads %>%
+    select(personid, tenant) %>%
+    distinct()
+  
+ # eGFR-based CKD staging
+  # Using Cockcroft-Gault (35592-5) or standard eGFR
+  egfr_cols <- c("35592-5", "35591-7", "33914-3", "48642-3")
+  
+  egfr_data <- lab_data %>%
+    filter(labcode_standard_id %in% egfr_cols) %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      egfr_value = median(average_value, na.rm = TRUE),  # Use median across measurements
+      .groups = "drop"
+    ) %>%
+    mutate(
+      # Shah CKD staging from eGFR
+      egfr_ckd_stage = case_when(
+        egfr_value >= 90 ~ 1,
+        egfr_value >= 60 ~ 2,
+        egfr_value >= 30 ~ 3,
+        egfr_value >= 15 ~ 4,
+        egfr_value < 15 ~ 5,
+        TRUE ~ NA_real_
+      ),
+      egfr_shah_level = case_when(
+        egfr_ckd_stage %in% c(1, 2) ~ "mild_moderate",
+        egfr_ckd_stage %in% c(3, 4, 5) ~ "severe",
+        TRUE ~ "none"
+      )
+    )
+  
+  # Proteinuria/ACR (9318-7, 32294-1)
+  # Note: Persistence (≥3 months) requires temporal logic
+  acr_cols <- c("9318-7", "32294-1", "2890-2")  # ACR and protein/creatinine ratio
+  
+  acr_data <- lab_data %>%
+    filter(labcode_standard_id %in% acr_cols) %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      acr_value = median(average_value, na.rm = TRUE),
+      acr_measurement_count = n(),
+      # Check for persistence: measurements spanning ≥90 days
+      first_measurement = min(date_lab, na.rm = TRUE),
+      last_measurement = max(date_lab, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      acr_days_span = as.numeric(difftime(last_measurement, first_measurement, units = "days")),
+      # Elevated ACR: >30 mg/g is microalbuminuria, >300 is macroalbuminuria
+      acr_elevated = acr_value > 30,
+      # Persistent proteinuria: elevated AND measurements span ≥90 days
+      proteinuria_persistent = acr_elevated & acr_days_span >= 90
+    )
+  
+  # TCD velocity (children) - 11674-9, 11702-8
+  tcd_cols <- c("11674-9", "11702-8")
+  
+  tcd_data <- lab_data %>%
+    filter(labcode_standard_id %in% tcd_cols) %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      tcd_velocity = max(average_value, na.rm = TRUE),  # Use max (worst) value
+      .groups = "drop"
+    ) %>%
+    mutate(
+      tcd_shah_level = case_when(
+        tcd_velocity > 200 ~ "severe",
+        tcd_velocity >= 170 ~ "mild_moderate",
+        TRUE ~ "none"
+      )
+    )
+  
+  # Combine all lab features
+  result <- patient_base %>%
+    left_join(
+      egfr_data %>% select(personid, tenant, egfr_value, egfr_ckd_stage, egfr_shah_level),
+      by = c("personid", "tenant")
+    ) %>%
+    left_join(
+      acr_data %>% select(personid, tenant, acr_value, acr_elevated, proteinuria_persistent),
+      by = c("personid", "tenant")
+    ) %>%
+    left_join(
+      tcd_data %>% select(personid, tenant, tcd_velocity, tcd_shah_level),
+      by = c("personid", "tenant")
+    ) %>%
+    mutate(
+      egfr_shah_level = replace_na(egfr_shah_level, "none"),
+      tcd_shah_level = replace_na(tcd_shah_level, "none"),
+      acr_elevated = replace_na(acr_elevated, FALSE),
+      proteinuria_persistent = replace_na(proteinuria_persistent, FALSE)
+    )
+  
+  return(result)
+}
+
+
+# ============================================================================
+# 3. VITAL-BASED ORGAN DAMAGE EXTRACTION
+# ============================================================================
+
+#' Extract Shah organ damage features from vital signs
+#'
+#' @param vital_data Vital sign encounter measures
+#' @param ads Reference table with personid/tenant
+#' @return Patient-level vital-derived organ damage indicators
+#' @export
+create_shah_vital_features <- function(vital_data, ads) {
+  
+  patient_base <- ads %>%
+    select(personid, tenant) %>%
+    distinct()
+  
+  # SpO2 / Oxygen saturation (59408-5, 59417-6, 20564-1)
+  spo2_codes <- c("59408-5", "59417-6", "20564-1")
+  
+  spo2_data <- vital_data %>%
+    filter(measurementcode_standard_id %in% spo2_codes) %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      spo2_median = median(median_value, na.rm = TRUE),
+      spo2_min = min(median_value, na.rm = TRUE),  # Worst case
+      .groups = "drop"
+    ) %>%
+    mutate(
+      # Use minimum (worst) SpO2 for classification
+      hypoxia_shah_level = case_when(
+        spo2_min < 88 ~ "severe",
+        spo2_min < 92 ~ "mild_moderate",  # Being conservative
+        TRUE ~ "none"
+      )
+    )
+  
+  # Blood pressure (8480-6 systolic, 8462-4 diastolic)
+  bp_sys_data <- vital_data %>%
+    filter(measurementcode_standard_id == "8480-6") %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      systolic_median = median(median_value, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  bp_dia_data <- vital_data %>%
+    filter(measurementcode_standard_id == "8462-4") %>%
+    group_by(personid, tenant) %>%
+    summarise(
+      diastolic_median = median(median_value, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  bp_data <- bp_sys_data %>%
+    full_join(bp_dia_data, by = c("personid", "tenant")) %>%
+    mutate(
+      # Shah hypertension classification
+      hypertension_shah_level = case_when(
+        systolic_median >= 140 | diastolic_median >= 90 ~ "severe",
+        systolic_median >= 120 | diastolic_median >= 70 ~ "mild_moderate",
+        TRUE ~ "none"
+      )
+    )
+  
+  # Combine all vital features
+  result <- patient_base %>%
+    left_join(
+      spo2_data %>% select(personid, tenant, spo2_median, spo2_min, hypoxia_shah_level),
+      by = c("personid", "tenant")
+    ) %>%
+    left_join(
+      bp_data %>% select(personid, tenant, systolic_median, diastolic_median, hypertension_shah_level),
+      by = c("personid", "tenant")
+    ) %>%
+    mutate(
+      hypoxia_shah_level = replace_na(hypoxia_shah_level, "none"),
+      hypertension_shah_level = replace_na(hypertension_shah_level, "none")
+    )
+  
+  return(result)
+}
+
+
+# ============================================================================
+# 4. AGGREGATE ORGAN DAMAGE SUMMARY
+# ============================================================================
+
+#' Combine ICD, lab, and vital features into Shah organ system summary
+#'
+#' @param icd_features Output from create_shah_icd_features
+#' @param lab_features Output from create_shah_lab_features
+#' @param vital_features Output from create_shah_vital_features
+#' @return Patient-level organ damage summary by system
+#' @export
+create_shah_organ_damage_summary <- function(icd_features, lab_features, vital_features) {
+  
+  # Join all feature sources
+  combined <- icd_features %>%
+    left_join(lab_features, by = c("personid", "tenant")) %>%
+    left_join(vital_features, by = c("personid", "tenant"))
+  
+  # Define expected columns and add missing ones with defaults
+  expected_icd_cols <- c(
+    "Pulmonary_HTN", "CHF", "DVT", "PE_mild_moderate", "PE_severe",
+    "CKD_stage_1", "CKD_stage_2", "CKD_stage_3", "CKD_stage_4", "CKD_stage_5", "ESRD",
+    "Stroke_hemorrhagic", "Stroke_ischemic", "Stroke_unspecified", "TIA", "Silent_infarct",
+    "AVN", "Leg_ulcer", "Varicose_ulcer",
+    "Retinopathy_nonprolif", "Retinal_detachment", "Blindness"
+  )
+  
+  expected_lab_cols <- c(
+    "egfr_shah_level", "proteinuria_persistent", "tcd_shah_level"
+  )
+  
+  expected_vital_cols <- c(
+    "hypoxia_shah_level", "hypertension_shah_level"
+  )
+  
+  # Add missing ICD columns (default FALSE)
+  for (col in expected_icd_cols) {
+    if (!col %in% names(combined)) {
+      combined[[col]] <- FALSE
+    }
+  }
+  
+  # Add missing lab/vital level columns (default "none")
+  for (col in c(expected_lab_cols, expected_vital_cols)) {
+    if (!col %in% names(combined)) {
+      combined[[col]] <- "none"
+    }
+  }
+  
+  # Add proteinuria_persistent if missing
+  if (!"proteinuria_persistent" %in% names(combined)) {
+    combined$proteinuria_persistent <- FALSE
+  }
+  
+  # Create organ system summaries following Shah Table 1
+  result <- combined %>%
+    mutate(
+      # CARDIOPULMONARY: worst of hypoxia, hypertension, PE, DVT, pulm HTN, CHF
+      cardiopulmonary_damage = case_when(
+        # Severe conditions
+        Pulmonary_HTN == TRUE ~ "severe",
+        CHF == TRUE ~ "severe",
+        PE_severe == TRUE ~ "severe",
+        hypoxia_shah_level == "severe" ~ "severe",
+        hypertension_shah_level == "severe" ~ "severe",
+        # Mild/moderate conditions
+        DVT == TRUE ~ "mild_moderate",
+        PE_mild_moderate == TRUE ~ "mild_moderate",
+        hypoxia_shah_level == "mild_moderate" ~ "mild_moderate",
+        hypertension_shah_level == "mild_moderate" ~ "mild_moderate",
+        TRUE ~ "none"
+      ),
+      
+      # KIDNEY: worst of CKD stage (ICD) or eGFR-derived stage, plus proteinuria
+      kidney_damage = case_when(
+        # Severe: Stage 3-5 or ESRD
+        CKD_stage_3 == TRUE | CKD_stage_4 == TRUE | CKD_stage_5 == TRUE | ESRD == TRUE ~ "severe",
+        egfr_shah_level == "severe" ~ "severe",
+        # Mild/moderate: Stage 1-2 with proteinuria
+        (CKD_stage_1 == TRUE | CKD_stage_2 == TRUE) & proteinuria_persistent == TRUE ~ "mild_moderate",
+        egfr_shah_level == "mild_moderate" & proteinuria_persistent == TRUE ~ "mild_moderate",
+        # Just proteinuria without CKD staging
+        proteinuria_persistent == TRUE ~ "mild_moderate",
+        TRUE ~ "none"
+      ),
+      
+      # BRAIN: worst of TIA, silent infarct, stroke, TCD
+      brain_damage = case_when(
+        # Severe: overt stroke, high TCD
+        Stroke_hemorrhagic == TRUE | Stroke_ischemic == TRUE | Stroke_unspecified == TRUE ~ "severe",
+        tcd_shah_level == "severe" ~ "severe",
+        # Mild/moderate: TIA, silent infarct, elevated TCD
+        TIA == TRUE ~ "mild_moderate",
+        Silent_infarct == TRUE ~ "mild_moderate",
+        tcd_shah_level == "mild_moderate" ~ "mild_moderate",
+        TRUE ~ "none"
+      ),
+      
+      # BONE: AVN (severity depends on functional limitation - not easily derived)
+      bone_damage = case_when(
+        AVN == TRUE ~ "present",  # Can't distinguish functional limitation
+        TRUE ~ "none"
+      ),
+      
+      # SKIN: leg ulcers
+      skin_damage = case_when(
+        Leg_ulcer == TRUE | Varicose_ulcer == TRUE ~ "mild_moderate",
+        TRUE ~ "none"
+      ),
+      
+      # RETINA: retinopathy, detachment, blindness
+      retina_damage = case_when(
+        Retinal_detachment == TRUE | Blindness == TRUE ~ "severe",
+        Retinopathy_nonprolif == TRUE ~ "mild_moderate",
+        TRUE ~ "none"
+      )
+    ) %>%
+    # Create aggregate indicators AFTER individual organ systems are computed
+    mutate(
+      # Check for severe damage to Heart, Lung, Kidney, Brain
+      has_severe_heart_lung_kidney_brain = (
+        cardiopulmonary_damage == "severe" |
+        kidney_damage == "severe" |
+        brain_damage == "severe"
+      ),
+      
+      # Check for severe damage to Bone or Retina
+      has_severe_bone_or_retina = (
+        bone_damage == "severe" |
+        retina_damage == "severe"
+      ),
+      
+      # Any organ damage present
+      has_any_organ_damage = (
+        cardiopulmonary_damage != "none" |
+        kidney_damage != "none" |
+        brain_damage != "none" |
+        bone_damage != "none" |
+        skin_damage != "none" |
+        retina_damage != "none"
+      ),
+      
+      # Mild/moderate only (no severe)
+      has_mild_moderate_damage = (
+        cardiopulmonary_damage == "mild_moderate" |
+        kidney_damage == "mild_moderate" |
+        brain_damage == "mild_moderate" |
+        skin_damage == "mild_moderate" |
+        retina_damage == "mild_moderate"
+      ) & !has_severe_heart_lung_kidney_brain & !has_severe_bone_or_retina
+    )
+  
+  return(result)
+}
+
+
+# ============================================================================
+# 5. SHAH SEVERITY CLASSIFICATION (Figure 3 Decision Tree)
+# ============================================================================
+
+#' Load Shah severity truth table from CSV (configuration-driven)
+#'
+#' @param matrix_path Path to Smith_Shah_Severity_Matrix.csv
+#' @return Truth table in long format for merge-based classification
+#' @export
+load_shah_severity_matrix <- function(matrix_path) {
+  
+  read_csv(matrix_path, show_col_types = FALSE) %>%
+    # Pivot from wide (age columns) to long format
+    pivot_longer(
+      cols = c(`Under 8`, `8–15`, `16–24`, `25–40`, `Over 40`),
+      names_to = "age_group_raw",
+      values_to = "shah_class"
+    ) %>%
+    # Standardize column names for merge
+    transmute(
+      organ_damage = case_when(
+        `End Organ Damage` == "None" ~ "none",
+        `End Organ Damage` == "Mild/Moderate" ~ "mild_moderate",
+        `End Organ Damage` == "Severe Bone/Retina" ~ "severe_bone_retina",
+        `End Organ Damage` == "Severe HLKB" ~ "severe_heart_lung_kidney_brain"
+      ),
+      chronic_pain = (`Chronic Pain` == "Yes"),
+      voc_visits = case_when(
+        `VOC Visits (last year)` == "0–1" ~ "0_1",
+        `VOC Visits (last year)` == "2–4" ~ "2_4",
+        `VOC Visits (last year)` == "≥5" ~ "5_plus"
+      ),
+      age_group = case_when(
+        age_group_raw == "Under 8" ~ "under_8",
+        age_group_raw == "8–15" ~ "8_to_15",
+        age_group_raw == "16–24" ~ "16_to_24",
+        age_group_raw == "25–40" ~ "25_to_40",
+        age_group_raw == "Over 40" ~ "over_40"
+      ),
+      shah_class = str_extract(shah_class, "I+")  # Extract I, II, or III
+    )
+}
+
+#' Create Shah severity truth table programmatically (fallback if no CSV)
+#'
+#' @return Truth table with all Shah classification scenarios
+#' @export
+create_shah_severity_truth_table <- function() {
+  
+  # Based on Shah Figure 2 / Smith_Shah_Severity_Matrix.csv
+  # This is a fallback if CSV not available
+  
+  tribble(
+    ~organ_damage, ~chronic_pain, ~voc_visits, ~under_8, ~`8_to_15`, ~`16_to_24`, ~`25_to_40`, ~over_40,
+    # None, No chronic pain
+    "none", FALSE, "0_1", "I", "I", "I", "I", "I",
+    "none", FALSE, "2_4", "II", "I", "I", "I", "II",
+    "none", FALSE, "5_plus", "III", "III", "III", "III", "III",
+    # None, Chronic pain
+    "none", TRUE, "0_1", "II", "II", "II", "II", "II",
+    "none", TRUE, "2_4", "II", "II", "II", "II", "II",
+    "none", TRUE, "5_plus", "III", "III", "III", "III", "III",
+    # Mild/Moderate
+    "mild_moderate", FALSE, "0_1", "II", "II", "II", "II", "II",
+    "mild_moderate", FALSE, "2_4", "II", "II", "II", "II", "II",
+    "mild_moderate", FALSE, "5_plus", "III", "III", "III", "III", "III",
+    "mild_moderate", TRUE, "0_1", "II", "II", "II", "II", "II",
+    "mild_moderate", TRUE, "2_4", "II", "II", "II", "II", "II",
+    "mild_moderate", TRUE, "5_plus", "III", "III", "III", "III", "III",
+    # Severe Bone/Retina
+    "severe_bone_retina", FALSE, "0_1", "III", "III", "III", "II", "II",
+    "severe_bone_retina", FALSE, "2_4", "III", "III", "III", "III", "III",
+    "severe_bone_retina", FALSE, "5_plus", "III", "III", "III", "III", "III",
+    "severe_bone_retina", TRUE, "0_1", "III", "III", "III", "III", "III",
+    "severe_bone_retina", TRUE, "2_4", "III", "III", "III", "III", "III",
+    "severe_bone_retina", TRUE, "5_plus", "III", "III", "III", "III", "III",
+    # Severe HLKB (Heart, Lung, Kidney, Brain)
+    "severe_heart_lung_kidney_brain", FALSE, "0_1", "III", "III", "III", "III", "III",
+    "severe_heart_lung_kidney_brain", FALSE, "2_4", "III", "III", "III", "III", "III",
+    "severe_heart_lung_kidney_brain", FALSE, "5_plus", "III", "III", "III", "III", "III",
+    "severe_heart_lung_kidney_brain", TRUE, "0_1", "III", "III", "III", "III", "III",
+    "severe_heart_lung_kidney_brain", TRUE, "2_4", "III", "III", "III", "III", "III",
+    "severe_heart_lung_kidney_brain", TRUE, "5_plus", "III", "III", "III", "III", "III"
+  ) %>%
+    pivot_longer(
+      cols = c(under_8, `8_to_15`, `16_to_24`, `25_to_40`, over_40),
+      names_to = "age_group",
+      values_to = "shah_class"
+    )
+}
+
+
+#' Classify patients using Shah severity system
+#'
+#' @param patient_data Dataset with organ damage summary
+#' @param voc_counts VOC visit counts per patient
+#' @param chronic_pain_indicator Chronic pain indicators per patient
+#' @param age_var Name of age variable
+#' @param matrix_path Optional path to Shah matrix CSV (uses fallback if NULL)
+#' @return Patient data with shah_severity_class added
+#' @export
+classify_shah_severity <- function(patient_data, voc_counts, chronic_pain_indicator,
+                                   age_var = "age_at_first_touch",
+                                   matrix_path = NULL) {
+  
+  # Load truth table from CSV or use fallback
+  if (!is.null(matrix_path) && file.exists(matrix_path)) {
+    truth_table <- load_shah_severity_matrix(matrix_path)
+  } else {
+    truth_table <- create_shah_severity_truth_table()
+  }
+  
+  # Prepare patient features for merge
+  classified <- patient_data %>%
+    # Create age group
+    mutate(
+      age_group = case_when(
+        .data[[age_var]] < 8 ~ "under_8",
+        .data[[age_var]] <= 15 ~ "8_to_15",
+        .data[[age_var]] <= 24 ~ "16_to_24",
+        .data[[age_var]] <= 40 ~ "25_to_40",
+        TRUE ~ "over_40"
+      )
+    ) %>%
+    # Join VOC counts
+    left_join(voc_counts, by = c("personid", "tenant")) %>%
+    mutate(
+      voc_visit_count = replace_na(voc_visit_count, 0),
+      voc_visits = case_when(
+        voc_visit_count >= 5 ~ "5_plus",
+        voc_visit_count >= 2 ~ "2_4",
+        TRUE ~ "0_1"
+      )
+    ) %>%
+    # Join chronic pain indicator
+    left_join(chronic_pain_indicator, by = c("personid", "tenant")) %>%
+    mutate(chronic_pain = replace_na(chronic_pain, FALSE)) %>%
+    # Create organ damage category for truth table merge
+    mutate(
+      organ_damage = case_when(
+        has_severe_heart_lung_kidney_brain ~ "severe_heart_lung_kidney_brain",
+        has_severe_bone_or_retina ~ "severe_bone_retina",
+        has_mild_moderate_damage ~ "mild_moderate",
+        TRUE ~ "none"
+      )
+    ) %>%
+    # Merge with truth table
+    left_join(
+      truth_table,
+      by = c("age_group", "organ_damage", "chronic_pain", "voc_visits")
+    )
+  
+  # Handle any unmatched cases (should not happen with complete truth table)
+  classified <- classified %>%
+    mutate(
+      shah_class = case_when(
+        is.na(shah_class) & voc_visits == "5_plus" ~ "III",  # Safety: ≥5 VOC always Class III
+        is.na(shah_class) ~ "II",  # Default fallback
+        TRUE ~ shah_class
+      )
+    )
+  
+  return(classified)
+}
+
+
+# ============================================================================
+# 6. VOC VISIT COUNTING (with temporal deduplication)
+# ============================================================================
+
+#' Count VOC visits with temporal deduplication
+#'
+#' @param encounter_data Encounter-level data
+#' @param condition_data Condition data to identify VOC encounters
+#' @param lookback_days Days to look back for VOC count (default 365)
+#' @param dedup_window_days Days to deduplicate same VOC episode (default 14)
+#' @param reference_date Date to count back from (e.g., first_touch_date)
+#' @return Patient-level VOC counts
+#' @export
+create_voc_visit_counts <- function(condition_data, ads, 
+                                    lookback_days = 365,
+                                    dedup_window_days = 14) {
+  
+  # VOC-related ICD codes (pain crisis, ACS, priapism, splenic/hepatic sequestration)
+  voc_patterns <- c(
+    "^D57.*crisis",      # SCD with crisis
+    "^D57\\.0",          # SCD with crisis (HbSS)
+    "^D57\\.21",         # SCD-Hb C with crisis
+    "^D57\\.41",         # SCD thalassemia with crisis
+    "^D57\\.81",         # Other SCD with crisis
+    "^282\\.42",         # SCD with crisis (ICD9)
+    "^282\\.62",         # SCD-Hb C with crisis (ICD9)
+    "^282\\.64"          # SCD thalassemia with crisis (ICD9)
+  )
+  
+  # Also include ACS codes
+  acs_patterns <- c(
+    "^517\\.3",          # ACS ICD9
+    "^J98\\.01"          # Acute bronchospasm (proxy)
+  )
+  
+  combined_pattern <- paste(c(voc_patterns, acs_patterns), collapse = "|")
+  
+  # Get reference dates from ads
+  reference_dates <- ads %>%
+    select(personid, tenant, first_touch_date) %>%
+    distinct()
+  
+  # Find VOC-related conditions
+  voc_events <- condition_data %>%
+    filter(str_detect(conditioncode_standard_id, combined_pattern)) %>%
+    inner_join(reference_dates, by = c("personid", "tenant")) %>%
+    filter(
+      datetime_condition >= first_touch_date - days(lookback_days),
+      datetime_condition <= first_touch_date
+    ) %>%
+    arrange(personid, tenant, datetime_condition) %>%
+    # Deduplicate within window
+    group_by(personid, tenant) %>%
+    mutate(
+      days_since_last = as.numeric(
+        difftime(datetime_condition, lag(datetime_condition), units = "days")
+      ),
+      new_episode = is.na(days_since_last) | days_since_last > dedup_window_days
+    ) %>%
+    summarise(
+      voc_visit_count = sum(new_episode),
+      .groups = "drop"
+    )
+  
+  # Ensure all patients have a count (even if 0)
+  result <- ads %>%
+    select(personid, tenant) %>%
+    distinct() %>%
+    left_join(voc_events, by = c("personid", "tenant")) %>%
+    mutate(voc_visit_count = replace_na(voc_visit_count, 0))
+  
+  return(result)
+}
+
+
+# ============================================================================
+# 7. VALIDATION FUNCTIONS
+# ============================================================================
+#' Validate Shah severity distribution
+#'
+#' @param classified_data Output from classify_shah_severity
+#' @return Summary statistics for validation
+#' @export
+validate_shah_classification <- function(classified_data) {
+  
+  # Overall distribution
+  class_dist <- classified_data %>%
+    count(shah_class) %>%
+    mutate(pct = n / sum(n) * 100)
+  
+  # Distribution by age group
+  age_dist <- classified_data %>%
+    count(age_group, shah_class) %>%
+    group_by(age_group) %>%
+    mutate(pct = n / sum(n) * 100)
+  
+  # Distribution by organ damage
+  organ_dist <- classified_data %>%
+    count(organ_damage, shah_class) %>%
+    group_by(organ_damage) %>%
+    mutate(pct = n / sum(n) * 100)
+  
+  # Check monotonicity: higher severity should correlate with worse outcomes
+  # (to be validated against actual outcomes like mortality)
+  
+  list(
+    overall = class_dist,
+    by_age = age_dist,
+    by_organ_damage = organ_dist
+  )
+}
+
+
+#' Create summary report of data availability for Shah classification
+#'
+#' @param icd_features Output from create_shah_icd_features
+#' @param lab_features Output from create_shah_lab_features
+#' @param vital_features Output from create_shah_vital_features
+#' @return Data availability report
+#' @export
+create_shah_data_availability_report <- function(icd_features, lab_features, vital_features) {
+  
+  n_patients <- nrow(icd_features)
+  
+  report <- tribble(
+    ~feature_source, ~feature, ~n_with_data, ~pct_available,
+    # ICD features (check for non-FALSE/non-NA)
+    "ICD", "CKD_stage_1_2", sum(icd_features$CKD_stage_1 | icd_features$CKD_stage_2, na.rm = TRUE), NA,
+    "ICD", "CKD_stage_3_5", sum(icd_features$CKD_stage_3 | icd_features$CKD_stage_4 | icd_features$CKD_stage_5, na.rm = TRUE), NA,
+    "ICD", "Pulmonary_HTN", sum(icd_features$Pulmonary_HTN, na.rm = TRUE), NA,
+    "ICD", "DVT", sum(icd_features$DVT, na.rm = TRUE), NA,
+    "ICD", "PE", sum(icd_features$pe_event_count > 0, na.rm = TRUE), NA,
+    "ICD", "Stroke", sum(icd_features$Stroke_ischemic | icd_features$Stroke_hemorrhagic, na.rm = TRUE), NA,
+    # Lab features
+    "Lab", "eGFR", sum(!is.na(lab_features$egfr_value)), NA,
+    "Lab", "ACR/Proteinuria", sum(!is.na(lab_features$acr_value)), NA,
+    "Lab", "TCD_velocity", sum(!is.na(lab_features$tcd_velocity)), NA,
+    # Vital features
+    "Vital", "SpO2", sum(!is.na(vital_features$spo2_median)), NA,
+    "Vital", "Blood_pressure", sum(!is.na(vital_features$systolic_median)), NA
+  ) %>%
+    mutate(pct_available = round(n_with_data / n_patients * 100, 1))
+  
+  return(report)
+}
+
+# Cell 162
+tar_read(comorbidity_ConditionEncounter) %>% sapply("class")
+
+# Cell 163
+condition_factable  <- tar_read(condition_factable)  %>% janitor::clean_names()
+
+condition_factable  %>% names()
+
+
+# Cell 164
+tar_read(comorbidity_ConditionEncounter)  %>% 
+inner_join(condition_factable, by = c('conditioncode_standard_id', 'conditioncode_standard_primary_display')) %>% 
+head()
+
+# Cell 166
+# Search condition_factable for Shah organ damage codes
+tar_read(condition_factable) %>%
+  filter(
+    str_detect(conditioncode_standard_id, "^N18\\.[1-6]") |  # CKD stages
+    str_detect(conditioncode_standard_id, "^I26") |          # PE
+    str_detect(conditioncode_standard_id, "^I27") |          # Pulm HTN
+    str_detect(conditioncode_standard_id, "^I50") |          # CHF
+    str_detect(conditioncode_standard_id, "^G45") |          # TIA
+    str_detect(conditioncode_standard_id, "^I6[0-4]") |      # Stroke
+    str_detect(conditioncode_standard_id, "^M87") |          # AVN
+    str_detect(conditioncode_standard_id, "^L97") |          # Leg ulcer
+    str_detect(conditioncode_standard_id, "^I83\\.0") |      # Varicose ulcer
+    str_detect(conditioncode_standard_id, "^H33") |          # Retinal detach
+    str_detect(conditioncode_standard_id, "^H36\\.81") |     # SCD retinopathy
+    str_detect(conditioncode_standard_id, "^H54")            # Blindness
+  ) %>%
+  arrange(conditioncode_standard_id) %>%
+
+display_gt_basic()
+
+# Cell 167
+# Check for remaining Shah codes
+tar_read(condition_factable) %>%
+  filter(
+    str_detect(conditioncode_standard_id, "^G45") |           # TIA
+    str_detect(conditioncode_standard_id, "^I50") |           # CHF
+    str_detect(conditioncode_standard_id, "^I82") |           # DVT
+    str_detect(conditioncode_standard_id, "^M87") |           # AVN
+    str_detect(conditioncode_standard_id, "^L97") |           # Leg ulcer
+    str_detect(conditioncode_standard_id, "^H33") |           # Retinal detachment
+    str_detect(conditioncode_standard_id, "^H36") |           # SCD retinopathy
+    str_detect(conditioncode_standard_id, "^H54") |           # Blindness
+    str_detect(conditioncode_standard_id, "^I6[0-2]")         # Hemorrhagic stroke
+  ) %>%
+  select(conditioncode_standard_id, conditioncode_standard_primaryDisplay, N) %>%
+  arrange(conditioncode_standard_id)
+
+# Cell 168
+ads  %>% count(voc_category)
+
+# Cell 170
+# Patients >=25 with severe retinopathy, NO chronic pain, and <2 VOC visits last year => Class II
+#
+# Assumptions about your columns:
+#   age_years: numeric
+#   voc_visits_last_year: numeric (# unscheduled acute care visits due to VOCs in last year)
+#   chronic_pain: TRUE/FALSE
+#   eod_level: character/factor in {"none","mild","moderate","severe"} summarizing end-organ damage for the patient
+#   severe_retinopathy: TRUE/FALSE (or 0/1) indicating severe retinopathy
+#
+# If your column names differ, edit the variables in the mutate() call accordingly.
+ 
+library(dplyr)
+ 
+classify_scd_severity <- function(df,
+                                  age_col = "age",
+                                  voc_col = "voc_episode_count",
+                                  chronic_pain_col = "chronic_pain",
+                                  eod_level_col = "eod_level",
+                                  severe_retinopathy_col = "severe_retinopathy",
+                                  out_col = "wally_smith_class") {
+ 
+  df %>%
+    mutate(
+      # Pull columns (so users can pass different names)
+      .age = .data[[age_col]],
+      .voc = .data[[voc_col]],
+      .cp  = .data[[chronic_pain_col]],
+      .eod = tolower(as.character(.data[[eod_level_col]])),
+      .ret = .data[[severe_retinopathy_col]],
+ 
+      # Derived flags from your already-curated end-organ damage column
+      .severe_eod = .eod %in% c("severe"),
+      .mild_mod_eod = .eod %in% c("mild", "moderate"),
+ 
+      # Core classification
+      .class_raw = case_when(
+        # ---- SPECIAL OVERRIDE RULE ----
+        !is.na(.age) & !is.na(.ret) & !is.na(.cp) & !is.na(.voc) &
+          .age >= 25 & (.ret == TRUE) & (.cp == FALSE) & (.voc < 2) ~ "II",
+ 
+        # ---- Flowchart rules ----
+        # 1) Severe end-organ damage? -> Class III
+        !is.na(.severe_eod) & .severe_eod ~ "III",
+ 
+        # 2) >=5 VOC acute-care visits last year? -> Class III
+        !is.na(.voc) & .voc >= 5 ~ "III",
+ 
+        # 3) Mild/moderate end-organ damage? -> Class II
+        !is.na(.mild_mod_eod) & .mild_mod_eod ~ "II",
+ 
+        # 4) Chronic pain? -> Class II
+        !is.na(.cp) & .cp ~ "II",
+ 
+        # 5) <2 VOC visits last year? -> Class I
+        !is.na(.voc) & .voc < 2 ~ "I",
+ 
+        # 6) Otherwise (>=2 visits): age 8–40? -> Class I, else Class II
+        !is.na(.age) & .age >= 8 & .age <= 40 ~ "I",
+        !is.na(.age) ~ "II",
+ 
+        # If we truly can't decide due to missingness
+        TRUE ~ NA_character_
+      ),
+ 
+      # Output as an ordered factor if you like
+      "{out_col}" := factor(.class_raw, levels = c("I", "II", "III"), ordered = TRUE)
+    ) %>%
+    select(-.age, -.voc, -.cp, -.eod, -.ret, -.severe_eod, -.mild_mod_eod, -.class_raw)
+}
+ 
+# ---- Example usage ----
+# df2 <- classify_scd_severity(df)
+ 
+# If your columns are named differently:
+# df2 <- classify_scd_severity(
+#   df,
+#   age_col = "age",
+#   voc_col = "voc_acute_care_cnt_12mo",
+#   chronic_pain_col = "chronic_pain_flag",
+#   eod_level_col = "end_organ_damage_level",
+#   severe_retinopathy_col = "retinopathy_severe_flag",
+#   out_col = "severity_class"
+# )
+
+
+

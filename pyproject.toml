@@ -1,0 +1,25 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lhn"
+version = "0.1.0"
+description = "HealthEIntent data processing utilities"
+authors = [
+  { name="Harlan A Nelson", email="hnelson3@iuhealth.org" },
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+]
+# You can add other metadata here if you want, like readme, requires-python, etc.
+# For now, we'll keep it minimal, letting setup.py handle most project details.
+
+# [project.optional-dependencies]
+# dev = ["pytest", "flake8"]
+
+# [project.urls]
+# "Homepage" = "https://github.com/yourusername/lhn"
+# "Bug Tracker" = "https://github.com/yourusername/lhn/issues"

@@ -1,0 +1,664 @@
+allergyTBL                      : ${dataSchema}.allergy
+clinical_eventTBL               : ${dataSchema}.clinical_event
+conditionTBL                    : ${dataSchema}.condition
+demographicRawTBL               : ${dataSchema}.demographics
+encounterTBL                    : ${dataSchema}.encounter
+immunizationTBL                 : ${dataSchema}.immunization
+labTBL                          : ${dataSchema}.lab
+measurementTBL                  : ${dataSchema}.measurement
+medicationTBL                   : ${dataSchema}.medication
+medication_administrationTBL    : ${dataSchema}.medication_administration
+order_listTBL                   : ${dataSchema}.order_list
+demographicTBL                  : ${dataSchema}.preferred_demographics
+problem_listTBL                 : ${dataSchema}.problem_list
+procedureTBL                    : ${dataSchema}.procedure
+provider_demographicsTBL        : ${dataSchema}.provider_demographics
+questionnaireTBL                : ${dataSchema}.questionnaire
+tenant_attributesTBL            : ${dataSchema}.tenant_attributes
+
+# used in function constructDataObject
+RWDTables: 
+  mortalitySource:
+    source: 'mortality'
+    inputRegex:
+      - "^personid"
+      - "MonthOfDeath"
+    datefield: "MonthOfDeath"
+    insert:
+      - "withColumn('dateofdeath', F.when(F.col('MonthOfDeath').isNotNull(), F.last_day('MonthOfDeath')).otherwise(F.col('MonthOfDeath')))"
+   
+  # Small Version of clinical_event
+  clinical_eventSource:
+    source: 'clinical_event'
+    inputRegex:
+      - '^clincialeventid$'
+      - '^personid$'
+      - '^clinicaleventid$'
+      - '^encounterid$'
+      - '^clinicaleventcode_standard_id$'
+      - '^clinicaleventcode_standard_codingSystemId$'
+      - 'clinicaleventcode.standard.primaryDisplay'
+      - '^loincclass'
+      - '^type$'
+      - '^servicedate$'
+      - '^tenant$'
+
+  clinical_eventSourceAll:
+    source: 'clinical_event'
+    inputRegex:
+      - '^clincialeventid$'
+      - '^personid$'
+      - '^clinicaleventid$'
+      - '^encounterid$'
+      - '^clinicaleventcode_standard_id$'
+      - '^clinicaleventcode_standard_codingSystemId$'
+      - 'clinicaleventcode.standard.primaryDisplay'
+      - '^loincclass'
+      - '^type$'
+      - '^servicedate$'
+      - '^typedvalue_type$'
+      - '^typedvalue_textValue.value$'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_numericValue_modifier$'
+      - '^typedvalue_unitOfMeasure_standard.id$'
+      - '^typedvalue_unitOfMeasure_standard_codingSystemId$'
+      - '^typedvalue_unitOfMeasure_standard_primaryDisplay$'
+      - '^typedvalue_unitOfMeasure_standardCodings_id$'
+      - '^typedvalue_unitOfMeasure_standardCodings_codingSystemId$'
+      - '^typedvalue_unitOfMeasure_standardCodings_primaryDisplay$'
+      - '^typedvalue_codifiedValues_values_value_standard_id$'
+      - '^typedvalue_codifiedValues_values_value_standard_codingSystemId$'
+      - '^typedvalue_codifiedValues_values_value_standard_primaryDisplay$'
+      - '^typedvalue_codifiedValues_values_value_standardCodings_id$'
+      - '^typedvalue_codifiedValues_values_value_standardCodings_codingSystemId$'
+      - '^typedvalue_codifiedValues_values_value_standardCodings_primaryDisplay$'
+      - '^typedvalue_dateValue_date$'
+      - '^interpretation_standard_id$'
+      - '^interpretation_standard_codingSystemId$'
+      - '^interpretation_standard_primaryDisplay$'
+      - '^status.standard_id$'
+      - '^status_standard_codingSystemId$'
+      - '^status_standard_primaryDisplay$'
+      - '^recordertype$'
+      - '^requester$'
+      - '^issueddate$'
+      - '^tenant$'
+
+  medicationSource:
+    source: 'medication'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^medicationid"
+      - "^drugCode_standard_id"
+      - "^drugCode_standard_codingSystemId"
+      - "^drugCode_standard_primaryDisplay"
+      - "^ingredients_drugCode_standard_id"
+      - "^ingredients_drugCode_standard_codingSystemId"
+      - "^ingredients_drugCode_standard_primaryDisplay"
+      - "^startDate"
+      - "^stopDate"
+      - "prescribingprovider"
+      - '^tenant$'
+    datefield: datetimeMed'
+    insert:
+     - "withColumn('datetimeMed', F.coalesce(F.to_timestamp(F.col('startdate')),F.to_timestamp(F.col('stopdate'))))"
+     - "withColumn('dateMed', F.to_date(F.col('datetimeMed')))"
+     - 'withColumn("startDate", F.to_utc_timestamp(F.col("startDate"), "UTC"))'
+     - 'withColumn("stopDate", F.to_utc_timestamp(F.col("stopDate"), "UTC"))'
+  
+  
+  medicationIngbredientsSource:
+    source: 'medication'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^medicationid"
+      - "^ingredients_drugCode_standard_id"
+      - "^ingredients_drugCode_standard_codingSystemId"
+      - "^ingredients_drugCode_standard_primaryDisplay"
+      - "^startDate"
+      - "^stopDate"
+      - "prescribingprovider"
+      - '^tenant$'
+    datefield: datetimeMed'
+    insert:
+     - "withColumn('datetimeMed', F.coalesce(F.to_timestamp(F.col('startdate')),F.to_timestamp(F.col('stopdate'))))"
+     - "withColumn('dateMed', F.to_date(F.col('datetimeMed')))"
+     - 'withColumn("startDate", F.to_utc_timestamp(F.col("startDate"), "UTC"))'
+     - 'withColumn("stopDate", F.to_utc_timestamp(F.col("stopDate"), "UTC"))'
+
+  medicationDrugSource:
+    source: 'medication'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^medicationid"
+      - "^drugCode_standard_id"
+      - "^drugCode_standard_codingSystemId"
+      - "^drugCode_standard_primaryDisplay"
+      - "^startDate"
+      - "^stopDate"
+      - "prescribingprovider"
+      - '^tenant$'
+    datefield: datetimeMed'
+    insert:
+     - "withColumn('datetimeMed', F.coalesce(F.to_timestamp(F.col('startdate')),F.to_timestamp(F.col('stopdate'))))"
+     - "withColumn('dateMed', F.to_date(F.col('datetimeMed')))"
+     - 'withColumn("startDate", F.to_utc_timestamp(F.col("startDate"), "UTC"))'
+     - 'withColumn("stopDate", F.to_utc_timestamp(F.col("stopDate"), "UTC"))'
+
+  medicationDatesSource:
+    source: 'medication'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^medicationid"
+      - "^startDate"
+      - "^stopDate"
+      - "prescribingprovider"
+      - '^tenant$'
+    datefield: datetimeMed'
+    insert:
+     - "withColumn('datetimeMed', F.coalesce(F.to_timestamp(F.col('startdate')),F.to_timestamp(F.col('stopdate'))))"
+     - "withColumn('dateMed', F.to_date(F.col('datetimeMed')))"
+     - 'withColumn("startDate", F.to_utc_timestamp(F.col("startDate"), "UTC"))'
+     - 'withColumn("stopDate", F.to_utc_timestamp(F.col("stopDate"), "UTC"))'
+
+  encounterSourceAll:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - "^financialclass_standard_primaryDisplay$"
+      - "^facilityids$"
+      - "^reasonforvisit_standard_primaryDisplay$"
+      - "^hospitalservice_standard_primaryDisplay$"
+      - '^classification_standard_id$'
+      - '^classification_standard_codingSystemId$'
+      - '^classification_standard_primaryDisplay$'
+      - '^encountertypes_classification_standard_primaryDisplay$'
+      - "^type_standard_primaryDisplay$"
+      - "^dischargedisposition_standard_primaryDisplay$"
+      - "^dischargetolocation_standard_primaryDisplay$"
+      - "^admissionsource_standard_primaryDisplay$"
+      - "^hospitalizationstartdate"
+      - "^readmission"  
+      - "^admissiontype_standard_primaryDisplay$"
+      - "^status_standard_primaryDisplay^"
+      - "^actualarrivaldate"
+      - "^tenant$"
+    datefield: 'datetimeEnc'
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('datetimeEnc', F.coalesce(F.to_timestamp(F.col('servicedate')),F.to_timestamp(F.col('dischargedate'))))"
+      - "withColumn('dateEnc', F.to_date(F.col('datetimeEnc')))"
+      
+  encounterSourceDates:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - '^classification_standard_primaryDisplay$'
+      - "^tenant$"
+    datefield: 'datetimeEnc'
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('servicedate',   F.to_timestamp(F.col('servicedate')))"
+      - "withColumn('dischargedate', F.to_timestamp(F.col('servicedate')))"
+      - "withColumn('datetimeEnc',   F.coalesce(F.col('servicedate'),F.col('dischargedate')))"
+      - "withColumn('dateEnc',       F.to_date(F.col('datetimeEnc')))"
+      - "filter(F.col('encType').isin(['Outpatient','Emergency','Inpatient','Admitted for Observation']))"
+  encounterSource:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - "^financialclass_standard_primaryDisplay$"
+      - "^facilityids$"
+      - "^hospitalservice_standard_primaryDisplay$"
+      - '^classification_standard_id$'
+      - '^classification_standard_codingSystemId$'
+      - '^classification_standard_primaryDisplay$'
+      - "^type_standard_primaryDisplay$"
+      - "^status_standard_primaryDisplay^"
+      - "^actualarrivaldate"
+      - "^tenant$"
+    datefield: 'datetimeEnc'
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('servicedate',   F.to_timestamp(F.col('servicedate')))"
+      - "withColumn('dischargedate', F.to_timestamp(F.col('servicedate')))"
+      - "withColumn('datetimeEnc',   F.coalesce(F.col('servicedate'),F.col('dischargedate')))"
+      - "withColumn('dateEnc',       F.to_date(F.col('datetimeEnc')))"
+      - "filter(F.col('encType').isin(['Outpatient','Emergency','Inpatient','Admitted for Observation']))"
+  emergencyEncounter:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - "^classification_standard_id"
+      - "^classification_standard_primaryDisplay"
+      - "^tenant$"
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('datetimeEnc', F.coalesce(F.to_timestamp(F.col('servicedate')),F.to_timestamp(F.col('dischargedate'))))"
+      - "filter(F.col('classification_standard_id').isin(['E','3301000175100']))"
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "drop('classification_standard_id')"
+  EncounterInsuranceSource:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - "^classification_standard_primaryDisplay"
+      - "^financialclass_standard_primaryDisplay"
+      - "^tenant$"
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('datetimeEnc', F.coalesce(F.to_timestamp(F.col('servicedate')),F.to_timestamp(F.col('dischargedate'))))"
+      - "drop('classification_standard_id')"
+  inpatientEncounterSource:
+    source: 'encounter'
+    inputRegex:
+      - "^encounterid"
+      - "^personid"
+      - "^servicedate"
+      - "^dischargedate"
+      - "^classification_standard_id"
+      - "^tenant$"
+    insert:
+      - "withColumnRenamed('classification_standard_primaryDisplay','encType')"
+      - "withColumn('datetimeEnc', F.coalesce(F.to_timestamp(F.col('servicedate')),F.to_timestamp(F.col('dischargedate'))))"
+      - "filter(F.col('classification_standard_id').isin(['I','3301000175100']))"
+      - "drop('classification_standard_id')"
+  conditionSource:
+    source: 'condition'
+    inputRegex:
+      - "^personid"
+      - '^personId$'
+      - "^encounterId"
+      - "^conditionId"
+      - "^effectiveDate"
+      - "^asserteddate$"
+      - "^conditionCode_standard_"
+      - "^billingrank"
+      - "^classification_standard_primaryDisplay"
+      - "confirmationstatus_standard_primaryDisplay"
+      - "^responsibleprovider"
+      - "^tenant$"
+    datefield: 'datetimeCondition'
+    insert:
+      - "withColumn('datetimeCondition', F.coalesce(F.to_timestamp(F.col('effectiveDate')),F.to_timestamp(F.col('assertedDate'))))"
+      - "withColumnRenamed('classification_standard_primaryDisplay','conditionType')"
+  conditionFinalSource:
+    source: 'condition'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^conditionId"
+      - "^effectiveDate"
+      - "^asserteddate$"
+      - "^conditionCode_standard_"
+      - "^billingrank"
+      - "^classification_standard_primaryDisplay"
+      - "confirmationstatus_standard_primaryDisplay"
+      - "^responsibleprovider"
+      - "^tenant$"
+    datefield: 'datetimeCondition'
+    insert:
+      - "withColumn('datetimeCondition', F.coalesce(F.to_timestamp(F.col('effectiveDate')),F.to_timestamp(F.col('assertedDate'))))"
+      - "withColumnRenamed('classification_standard_primaryDisplay','conditionType')"
+      - "withColumn('dateCondition', F.to_date(F.col('datetimeCondition')))"
+      - "filter(F.col('classification_standard_primaryDisplay') == 'Final diagnosis (discharge)')"
+  conditionFinalConfirmedSource:
+    source: 'condition'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^conditionId"
+      - "^effectiveDate"
+      - "^asserteddate$"
+      - "^conditionCode_standard_"
+      - "^billingrank"
+      - "^classification_standard_primaryDisplay"
+      - "confirmationstatus_standard_primaryDisplay"
+      - "^responsibleprovider"
+      - "^tenant$"
+    datefield: 'datetime'
+    insert:
+      - "withColumn('datetimeCondition', F.coalesce(F.to_timestamp(F.col('effectiveDate')),F.to_timestamp(F.col('assertedDate'))))"
+      - "withColumnRenamed('classification_standard_primaryDisplay','conditionType')"
+      - "withColumn('dateCondition', F.to_date(F.col('datetimeCondition')))"
+      - "filter((F.col('classification_standard_primaryDisplay') == 'Final diagnosis (discharge)') & (F.col('confirmationstatus_standard_primaryDisplay') == 'Confirmed present'))"
+  problem_listSource:
+    source: 'problem_list'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^problemlistid"
+      - "^effectivedate$"
+      - "^asserteddate$"
+      - "^problemlistcode_standard_"
+      - "^tenant$"
+    datefield: 'datetimeProblem'
+    insert:
+      - "withColumn('datetimeProblem', F.coalesce(F.to_timestamp(F.col('effectivedate')),F.to_timestamp(F.col('asserteddate'))))"
+  measurmentIndexSource:
+    source: 'measurement'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^measurementid"
+      - "^measurementcode_standard_id"
+      - "^measurementcode_standard_codingSystemId"
+      - "^measurementcode_standard_primaryDisplay"
+      - "^servicedate"
+      - "^tenant$"
+    datefield: 'datetimeMeasurement'
+    insert:
+      - "withColumn('datetimeMeasurement', F.to_utc_timestamp(F.col('servicedate'), 'UTC'))"
+      - "withColumn('dateMeasurement', F.to_date(F.col('datetimeMeasurement')))"
+  measurementMinimalSource:
+    source: 'measurement'
+    inputRegex:
+      - "^personid"
+      - "^encounterId"
+      - "^measurementid"
+      - "^measurementcode_standard_id"
+      - "^measurementcode_standard_codingSystemId"
+      - "^measurementcode_standard_primaryDisplay"
+      - "^typedvalue_numericValue_value"
+      - "^typedvalue_unitOfMeasure_standard_id"
+      - "^interpretation_standard_primaryDisplay$'"
+      - "^loincclass"
+      - "^servicedate"
+      - "^tenant$"
+    datefield: 'datetimeMeasurement'
+    insert:
+      - "withColumn('datetimeMeasurement', F.to_utc_timestamp(F.col('servicedate'), 'UTC'))"
+      - "withColumn('dateMeasurement', F.to_date(F.col('datetimeMeasurement')))"
+  measurementSource:
+    source: 'measurement'
+    inputRegex:
+      - '^measurementid'
+      - '^encounterid'
+      - "^personid"
+      - '^measurementcode_standard_id$'
+      - '^measurementcode_standard_codingSystemId$'
+      - '^measurementcode_standard_primaryDisplay$'
+      - 'loincclass'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_unitOfMeasure_standard_id$'
+      - '^interpretation_standard_primaryDisplay$'
+      - '^loincclass$'
+      - '^servicedate$'
+      - "^tenant$"
+    datefield: 'datetimeMeasurement'
+    insert:
+      - 'withColumn("datetimeMeasurement", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateMeasurement", F.to_date(F.col("datetimeMeasurement")))'
+      
+  measurementSource2:
+    source: 'measurement'
+    inputRegex:
+      - '^measurementid'
+      - '^encounterid'
+      - "^personid"
+      - '^measurementcode_standard_id$'
+      - '^measurementcode_standard_codingSystemId$'
+      - '^measurementcode_standard_primaryDisplay$'
+      - 'loincclass'
+      - '^typedvalue_type^'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_textValue_value$'
+      - '^typedvalue_numericValue_modifier$'
+      - '^typedvalue_unitOfMeasure_standard_id$'
+      - '^typedvalue_unitOfMeasure_standard_codingSystemId$'
+      - '^typedvalue_unitOfMeasure_standard_primaryDisplay$'
+      - '^interpretation_standard_codingSystemId$'
+      - '^interpretation_standard_primaryDisplay$'  
+      - '^loincclass$'
+      - '^issueddate$'
+      - '^source$'
+      - '^active$'
+      - '^type$'
+      - '^servicedate$'
+      - 'serviceperiod_startDate$'
+      - 'serviceperiod_endDate$'
+      - "^tenant$"
+    datefield: 'datetimeMeasurement'
+    insert:
+      - 'withColumn("datetimeMeasurement", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateMeasurement", F.to_date(F.col("datetimeMeasurement")))'
+  labSource:
+    source: 'lab'
+    inputRegex:
+      - '^labid'
+      - '^encounterid'
+      - "^personid"
+      - '^labcode_standard_id$'
+      - '^labcode_standard_codingSystemId$'
+      - '^labcode_standard_primaryDisplay$'
+      - '^typedvalue_type$'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_textValue_value$'
+      - '^typedvalue_numericValue_modifier$'
+      - '^typedvalue_unitOfMeasure_standard_id$'
+      - '^typedvalue_unitOfMeasure_standard_codingSystemId$'
+      - '^typedvalue_unitOfMeasure_standard_primaryDisplay$'
+      - '^interpretation_standard_codingSystemId$'
+      - '^interpretation_standard_primaryDisplay$'  
+      - '^loincclass$'
+      - '^issueddate$'
+      - '^source$'
+      - '^active$'
+      - '^type$'
+      - '^servicedate$'
+      - 'serviceperiod_startDate$'
+      - 'serviceperiod_endDate$'
+      - "^tenant$"
+    datefield: 'datetimeLab'
+    insert:
+      - 'withColumn("datetimeLab", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateLab", F.to_date(F.col("datetimeLab")))'
+    colsRename:
+      servicestartdate: servicedatestartLab
+
+
+  labsmallSource:
+    source: 'lab'
+    inputRegex:
+      - '^labid'
+      - '^encounterid'
+      - "^personid"
+      - '^labcode_standard_id$'
+      - '^labcode_standard_codingSystemId$'
+      - '^labcode_standard_primaryDisplay$'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_textValue_value$'
+      - '^typedvalue_unitOfMeasure_standard_id$'
+      - '^interpretation_standard_primaryDisplay$'  
+      - '^loincclass$'
+      - '^servicedate$'
+      - "^tenant$"
+    datefield: 'datetimeLab'
+    insert:
+      - 'withColumn("datetimeLab", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateLab", F.to_date(F.col("datetimeLab")))'
+
+
+  labsmallRangeSource:
+    source: 'lab'
+    inputRegex:
+      - '^labid'
+      - '^encounterid'
+      - "^personid"
+      - '^labcode_standard_id$'
+      - '^labcode_standard_codingSystemId$'
+      - '^labcode_standard_primaryDisplay$'
+      - '^typedvalue_numericValue_value$'
+      - '^typedvalue_textValue_value$'
+      - '^typedvalue_unitOfMeasure_standard_id$'
+      - '^interpretation_standard_primaryDisplay$'  
+      - '^referencerange_typedreferencelowvalue_numericvalue.value'
+      - '^referencerange_typedreferencehighvalue_numericvalue_value'
+      - '^loincclass$'
+      - '^servicedate$'
+      - "^tenant$"
+    datefield: 'datetimeLab'
+    insert:
+      - 'withColumn("datetimeLab", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateLab", F.to_date(F.col("datetimeLab")))'
+
+
+  labsIndexSource:
+    source: 'lab'
+    inputRegex:
+      - '^labid'
+      - '^encounterid'
+      - "^personid"
+      - '^labcode_standard_id$'
+      - '^labcode_standard_codingSystemId$'
+      - '^labcode_standard_primaryDisplay$'
+      - '^servicedate$'
+      - "^tenant$"
+    datefield: 'datetimeLab'
+    insert:
+      - 'withColumn("datetimeLab", F.to_utc_timestamp(F.col("servicedate"), "UTC"))'
+      - 'withColumn("dateLab", F.to_date(F.col("datetimeLab")))'
+  
+  procedureSource          : 
+    source: 'procedure'
+    inputRegex:
+      - "^personid"
+      - "encounterid"
+      - "procedureid"
+      - "servicestartdate"
+      - "serviceenddate"
+      - "procedurecode_standard_"
+      - "principalprovider"
+      - "active"
+      - "source"
+      - "tenant" 
+    datefield: 'datetimeProc'
+    insert:
+      - 'withColumn("datetimeProc", F.to_utc_timestamp(F.col("servicestartdate"), "UTC"))'
+      - 'withColumn("dateProc", F.to_date(F.col("datetimeProc")))'
+    colsRename:
+      servicestartdate: servicestartdateproc
+      serviceenddate: serviceenddateproc
+  procedureallSource          : 
+    source: 'procedure'
+    inputRegex:
+      - "^personid"
+      - "encounterid"
+      - "procedureid"
+      - "servicestartdate"
+      - "serviceenddate"
+      - "procedurecode_standard_"
+      - "modifiercodes_standard_"
+      - "principalprovider"
+      - "active"
+      - "source"
+      - "status_standard_"
+      - "tenant" 
+    datefield: 'datetimeProc'
+    insert:
+      - 'withColumn("datetimeProc", F.to_utc_timestamp(F.col("servicestartdate"), "UTC"))'
+      - 'withColumn("dateProc", F.to_date(F.col("datetimeProc")))'
+    colsRename:
+      servicestartdate: servicestartdateproc
+      serviceenddate: serviceenddateproc
+  demoSource:
+    source: 'demographics'
+    inputRegex: 
+      - 'personid'
+      - 'yearofbirth'
+      - 'dateofdeath'
+      - 'gender'
+      - '^maritalstatus_standard_primaryDisplay$'
+      - 'races'
+      - 'ethnicities'
+      - 'deceased'
+      - 'state'
+      - 'testpatientflag'
+      - 'source$'
+      - 'tenant'
+      - '^gender_standard_primaryDisplay$'
+      - '^birthsex_standard_primaryDisplay$'
+      - '^races_standard_primaryDisplay$'
+      - '^ethnicities_standard_primaryDisplay$'
+      - 'zip_code'
+    insert:
+     - "withColumn( 'dateofdeath', F.last_day(F.col('dateofdeath')))"
+     - "withColumn( 'yearofbirth', F.to_date( 'yearofbirth'))"
+  demoPreferred:
+    source: 'preferred_demographics'
+    inputRegex:
+      - 'personid'
+      - 'prefgender$'
+      - 'prefrace$'
+      - 'prefethnicity$'
+      - 'prefyearofbirth$'
+      - 'prefstate'
+      - 'prefmetropolitan'
+      - 'prefurban'
+      - 'prefzip'
+      - 'tenant'
+      - 'testpatientflag'
+    colsRename:
+      prefgender: gender
+      prefrace: race
+      prefethnicity: ethnicity
+      prefyearofbirth: yearofbirth
+      prefstate: state
+      prefmetropolitan: metropolitan
+      prefurban: urban
+      prefzip: zip
+      prefbirthdate: birthdate
+    insert:
+    - "withColumn('birthdate', F.to_date(F.col('prefyearofbirth')) )"
+  ethnicities:
+    source: 'demographics'
+    inputRegex:
+      - 'personid'
+      - 'ethnicities_standard_primaryDisplay'
+  birthsex:
+    source: 'demographics'
+    inputRegex:
+      - 'personid'
+      - 'birthsex_standard_primaryDisplay'
+  maritalstatus:
+    source: 'demographics'
+    inputRegex:
+      - 'personid'
+      - 'maritalstatus_standard_primaryDisplay'
+  races:
+    source: 'demographics'
+    inputRegex:
+      - 'personid'
+      - 'races_standard_primaryDisplay'
+  gender:
+    source: 'demographics'
+    inputRegex:
+      - 'personid'
+      - 'gender_standard_primaryDisplay'
+  providerSource:
+    source: 'provider_demographics'
+    inputRegex:
+      - 'providerid'
+      - 'cmsgrouping'
+      - 'cmsclassification'
+      - 'cmsspecialization'
+      - 'tenant'

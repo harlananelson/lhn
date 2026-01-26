@@ -1,0 +1,16 @@
+name: spark
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8  # Specify the version of Python you want to use
+  - pyspark
+  - numpy
+  - pandas
+  - matplotlib
+  - ipython
+  - pyyaml
+  - jupyter
+  - openjdk=11
+  # - scala
+  - pip

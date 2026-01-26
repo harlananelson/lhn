@@ -1,0 +1,34 @@
+Procedure,procedurecode_standard_id,Description
+Obstetric ultrasound - Standard first trimester,76801,"Ultrasound, pregnant uterus, real time with image documentation, fetal and maternal evaluation, first trimester"
+Obstetric ultrasound - Detailed second trimester,76811,"Ultrasound, pregnant uterus, real time with image documentation, fetal and maternal evaluation, detailed anatomic examination"
+Obstetric ultrasound - Transvaginal,76817,"Ultrasound, pregnant uterus, real time with image documentation, transvaginal"
+Amniocentesis,59000,"Amniocentesis, diagnostic; with or without ultrasound guidance"
+Chorionic Villus Sampling (CVS),59015,"Chorionic villus sampling, any method"
+Fetal Non-Stress Test (NST),59025,Fetal non-stress test
+Biophysical Profile (BPP),76818,Biophysical profile; with non-stress testing
+Glucose Tolerance Test (GTT),82950,"Glucose tolerance test, three specimens (includes glucose)"
+Group B Strep (GBS) Screening,87081,"Culture, screening for Group B Streptococcus, direct specimen"
+Cervical Cerclage,59320,"Cervical cerclage, any method"
+External Cephalic Version (ECV),59412,"External cephalic version, with or without tocolysis"
+Electrocardiogram (EKG/ECG),93000,"Electrocardiogram, routine ECG with at least 12 leads"
+Electrocardiogram (EKG/ECG),93010,"Electrocardiogram, interpretation and report"
+Electrocardiogram (EKG/ECG),93005,"Electrocardiogram, tracing only without interpretation and report"
+Echocardiogram,93306,"Echocardiography, transthoracic, complete study"
+Echocardiogram,93307,"Echocardiography, transthoracic, without Doppler"
+Echocardiogram,93308,"Echocardiography, limited study"
+Pulmonary Function Test (PFT),94010,"Spirometry, including graphic record, total and timed vital capacity"
+Pulmonary Function Test (PFT),94060,Bronchospasm evaluation with spirometry before and after bronchodilator
+Pulmonary Function Test (PFT),94726,Plethysmography for lung volumes
+MRI,70551,MRI of brain without contrast
+MRI,70553,MRI of brain with and without contrast
+CT Scan,71250,CT of chest without contrast
+CT Scan,74176,CT of abdomen and pelvis without contrast
+X-ray,71045,"X-ray of chest, single view"
+X-ray,71100,"X-ray of ribs, bilateral, 3 views"
+FEV1 (Forced Expiratory Volume in 1 Second),94010,Forced expiratory volume in 1 second (FEV1)
+FVC (Forced Vital Capacity),94060,Forced vital capacity (FVC)
+FEV1/FVC Ratio,94726,FEV1/FVC [Ratio]
+TLC (Total Lung Capacity),94728,Total lung capacity (TLC)
+RV (Residual Volume),94729,Residual volume (RV)
+PEF (Peak Expiratory Flow),94200,Peak expiratory flow (PEF)
+DLCO (Diffusing Capacity of the Lungs for Carbon Monoxide),94729,Diffusing capacity for carbon monoxide (DLCO)
