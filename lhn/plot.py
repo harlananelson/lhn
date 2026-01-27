@@ -6,6 +6,14 @@ from .header import get_logger
 
 logger = get_logger(__name__)
 
+def _check_plotnine():
+    """Check if plotnine is available and raise helpful error if not."""
+    if pn is None:
+        raise ImportError(
+            "plotnine is required for this plotting function but is not installed. "
+            "Install it with: pip install plotnine"
+        )
+
 def count(df, fieldName):
     result = df.groupby(F.col(fieldName)).count().withColumn('countln', F.log(F.col('count'))).toPandas()
     return(result)
@@ -29,7 +37,8 @@ def plot_counts(df, x, y, xlab='', ylab='', title = '', vlines=[], hlines=[], gr
     Returns:
     plotnine.ggplot: A plotnine scatter plot.
     """
-    
+    _check_plotnine()
+
     plot_arguments = {'x': x, 'y': y}
     if grouping is not None:
         df[grouping] = pd.Categorical(df[grouping])
@@ -564,7 +573,8 @@ def plotByTime(df, datefield='date', xlab='', ylab='', title='', date_low='2019-
         ylab = 'Proportion'
     
     if plot_lib == 'plotnine':
-       
+        _check_plotnine()
+
         if datefieldIsNumeric:
             print("datefield is numeric")
             result = (
@@ -582,7 +592,7 @@ def plotByTime(df, datefield='date', xlab='', ylab='', title='', date_low='2019-
                 + pn.theme(axis_text_x=pn.element_text(angle=90, hjust=1))
                 + pn.scale_x_date(date_breaks=date_break, date_labels="%b %Y")
             )
-            
+
         if geom_line:
             result = result + pn.geom_line()
 
@@ -595,7 +605,7 @@ def plotByTime(df, datefield='date', xlab='', ylab='', title='', date_low='2019-
             if isinstance(df[datefield].dtype, np.number):
                 # Handle surging_dates and annotate differently when datefield is a number
                 result += pn.geom_vline(xintercept=surging_dates, linetype="dashed", color="red")
-                result += pn.annotate("text", x=surging_dates, y=annotate_offset, label=surging_dates, 
+                result += pn.annotate("text", x=surging_dates, y=annotate_offset, label=surging_dates,
                     angle = 90, size = 8)
         if grouping is not None:
             pass
