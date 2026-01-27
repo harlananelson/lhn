@@ -83,4 +83,5 @@ root_logger.info("Spark Session Started by iuhealth.header.py")
 try:
     import plotnine as pn
 except ImportError:
+    pn = None  # Define pn as None so imports don't fail
     root_logger.warning("plotnine currently not installed")
