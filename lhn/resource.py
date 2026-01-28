@@ -79,13 +79,13 @@ class Resources:
         try:
             self.read_config_all()
             self.config_dict.update(self.config_dict['schemas'])
-            logger.info("Successfully Executed: self.read_config_all()")
+            logger.debug("Config files loaded")
         except Exception as e:
             logger.error(f"Calling self.read_config_all in Class Resources: {e}")
         
         try:
             self.processAllDataTables()
-            logger.info("Successfully Executed: self.processAllDataTables()")
+            self._log_processing_summary()
         except Exception as e:
             logger.error(f"Calling self.processAllDataTables in Class Resources: {e}")
             
@@ -95,7 +95,30 @@ class Resources:
             logger.error(f"Calling self.process_Allmetadata_tables in Class Resources: {e}")
         
         self.property_names = self.property_names_processed
-    
+
+    def _log_processing_summary(self):
+        """Log a summary of what was processed successfully and what failed."""
+        schemas = self.config_dict.get('schemas', {})
+        callFuns = self.config_dict.get('callFunProcessDataTables', {})
+
+        # Find what was successfully loaded
+        loaded = []
+        for callFun in callFuns.values():
+            type_key = callFun.get('type_key')
+            if type_key and hasattr(self, type_key):
+                loaded.append(f"self.{type_key}")
+
+        # Check for missing schemas
+        missing = getattr(self, '_missing_schemas', {})
+
+        if loaded:
+            logger.info(f"Successfully loaded: {', '.join(loaded)}")
+
+        if missing:
+            logger.warning(f"MISSING DATABASES - the following schemas could not be loaded:")
+            for schemakey, info in missing.items():
+                logger.warning(f"  - {schemakey}: database '{info['database']}' not found (self.{info['type_key']} unavailable)")
+
     def update_or_create_config_dict(self, key, value):
         if key in self.config_dict.keys():
             self.config_dict[key].update(value)
@@ -107,23 +130,23 @@ class Resources:
             location = self.config_table_locations[key]['location']
             if not isinstance(location, PosixPath):
                 location = self.basePath / location
-                logger.info(f"Changing location to {location}")
+                logger.debug(f"Changing location to {location}")
                 self.config_table_locations[key]['location'] = location
     
     def process_config_table_locations(self, current_locations, current_keys):
         for key in current_locations.keys():
-            logger.info(f"key:{key}, location: {self.config_table_locations[key]['location']}")
+            logger.debug(f"key:{key}, location: {self.config_table_locations[key]['location']}")
             location = current_locations[key]['location']
             if os.path.isfile(location):
                 if key not in current_keys or self.reReadConfig:
-                    logger.info(f"reading file {location} and updating config_dict with key {key}")
+                    logger.debug(f"Reading config: {location} -> {key}")
                     self.update_or_create_config_dict(key, read_config(location, replace=self.replace, debug=False))
                     self.config_dict.update(self.config_dict[key])
                     if 'config_table_locations' in self.config_dict[key].keys():
                         self.config_table_locations.update(self.config_dict[key]['config_table_locations'])
                         self.add_path_to_table_location()
             else:
-                logger.info(f"path {self.config_table_locations[key]['location']} not found")
+                logger.debug(f"Config file not found (optional): {self.config_table_locations[key]['location']}")
     
     def read_config_all(self):
         self.add_path_to_table_location()
@@ -172,13 +195,15 @@ class Resources:
     def processAllDataTables(self):
         callFunProcessDataTables = self.config_dict['callFunProcessDataTables']
         schemas = self.config_dict['schemas']
-        logger.info(f"Starting processAllDataTables with callFunDict: \n {pformat(callFunProcessDataTables)} \n and schemas: \n {pformat(schemas)}")
+        logger.info(f"Processing {len(schemas)} schemas: {list(schemas.keys())}")
+        logger.debug(f"callFunProcessDataTables: {pformat(callFunProcessDataTables)}")
+        logger.debug(f"schemas: {pformat(schemas)}")
         for schemakey, schemavalue in schemas.items():
-            logger.info(f"Processing schema name {schemakey} at location {schemavalue}")
+            logger.debug(f"Processing {schemakey} -> {schemavalue}")
             try:
                 self.processDataTableBySchemakey(schemakey, callFunProcessDataTables)
             except Exception as e:
-                logger.error(f"processAllDataTables: Couldn't process {schemakey}, Exception: {e}")
+                logger.error(f"Failed to process {schemakey}: {e}")
     
     def find_callFunProcessDataTables(self, schemakey, callFunProcessDataTables):
         return [callFunProcessDataTables[item] for item in callFunProcessDataTables if callFunProcessDataTables[item]['schema_type'] == schemakey]
@@ -188,30 +213,39 @@ class Resources:
             callFunProcessDataTables = self.config_dict['callFunProcessDataTables']
         
         schemavalue = self.config_dict['schemas'][schemakey]
-        logger.info(f"processDataTableBySchemakey: Processing schema name {schemakey} at location {schemavalue} (from schemas dictionary)")
+        logger.debug(f"processDataTableBySchemakey: {schemakey} -> {schemavalue}")
         callFun = self.find_callFunProcessDataTables(schemakey, callFunProcessDataTables)
-        
+
         if callFun:
-            logger.info(f"Found: schema {schemakey}:{schemavalue} in callFunProcessDataTables")
+            logger.debug(f"Found callFun for {schemakey}:{schemavalue}")
             if type(callFun) == list:
                 callFun = callFun[0]
-            
+
             callFun['parquetLoc'] = self.parquetLoc
-            
-            logger.info(f"Element of callFunProcessDataTables used for callFun: \n {pformat(callFun)}")
+
+            logger.debug(f"callFun for {schemakey}: {callFun}")
             if database_exists(schemavalue):
-                logger.info(f"Found schema {schemakey} at {schemavalue}")
+                logger.debug(f"Found database {schemavalue} for {schemakey}")
                 setattr(self, schemakey + '_self_processDataTablesCall', callFun)
                 try:
                     self.processDataTables(**callFun)
-                    logger.info(f"processed {schemakey} to produce property {callFun['property_name']} and dictionary {callFun['type_key']}")
-                    logger.info(f"Can call h.Extract(resource.{callFun['type_key']}) to get the Extract object")
+                    logger.info(f"Processed {schemakey} -> self.{callFun['type_key']} (property: {callFun['property_name']})")
                 except Exception as e:
-                    logger.error(f"processAllDataTables: Couldn't process {callFun['data_type']}, Exception: {e}")
+                    logger.error(f"Failed to process {callFun['data_type']}: {e}")
             else:
-                logger.info(f"schema not found {schemavalue} as associated with {schemakey}")
+                # Track missing schemas for better error reporting
+                if not hasattr(self, '_missing_schemas'):
+                    self._missing_schemas = {}
+                self._missing_schemas[schemakey] = {
+                    'database': schemavalue,
+                    'type_key': callFun['type_key'],
+                    'property_name': callFun['property_name']
+                }
+                logger.warning(f"DATABASE NOT FOUND: '{schemavalue}' for {schemakey}. "
+                              f"self.{callFun['type_key']} will NOT be available. "
+                              f"Check: spark.sql('SHOW DATABASES LIKE \"{schemavalue}\"')")
         else:
-            logger.info(f"Not Found: schema_type of callFunProcessDataTables in config-global never matches {schemakey} in callFunProcessDataTableBySchemakey")
+            logger.debug(f"No callFun found for schema_type={schemakey} (not in callFunProcessDataTables)")
     
     def locals_update(self):
         result = {k: v for k, v in self.config_dict.items() if not k.startswith('_')}
@@ -224,15 +258,47 @@ class Resources:
         return result
     
     def load_into_local(self, everything=False, schemakey='projectSchema', extractName='e'):
-        logger.info(f"load_into_local: Loading into local everything = {everything}, schemakey = {schemakey}, extractName = {extractName}")
+        logger.debug(f"load_into_local: everything={everything}, schemakey={schemakey}, extractName={extractName}")
         callFun = self.find_callFunProcessDataTables(schemakey, self.config_dict['callFunProcessDataTables'])[0]
         if not hasattr(self, 'single_level_items'):
-            logger.warning("self.single_level_items not found, initializing as empty dict")
+            logger.debug("single_level_items not found, initializing as empty dict")
             self.single_level_items = {}
         result = self.single_level_items
-        logger.info(f"load_into_local: Found callFunProcessDataTables for {schemakey} \n {pformat(callFun)}")
-        logger.info(f"result[{extractName}] = Extract(getattr(self, {callFun['type_key']})")
-        result[extractName] = Extract(getattr(self, callFun['type_key']))
+
+        # Check if the required attribute exists before trying to access it
+        type_key = callFun['type_key']
+        if not hasattr(self, type_key):
+            # Check if this schema was in the missing schemas list
+            missing_info = getattr(self, '_missing_schemas', {}).get(schemakey, {})
+            if missing_info:
+                raise AttributeError(
+                    f"\n{'='*60}\n"
+                    f"ERROR: Cannot load '{extractName}' - database does not exist!\n"
+                    f"{'='*60}\n"
+                    f"  Schema key:    {schemakey}\n"
+                    f"  Database:      {missing_info.get('database', 'unknown')}\n"
+                    f"  Attribute:     self.{type_key}\n"
+                    f"\n"
+                    f"The database '{missing_info.get('database', 'unknown')}' was not found.\n"
+                    f"\n"
+                    f"To debug, run:\n"
+                    f"  spark.sql('SHOW DATABASES').toPandas()\n"
+                    f"\n"
+                    f"Common causes:\n"
+                    f"  1. Database name is misspelled in config\n"
+                    f"  2. Using a kernel without Hive metastore access\n"
+                    f"  3. Database hasn't been created yet\n"
+                    f"{'='*60}"
+                )
+            else:
+                raise AttributeError(
+                    f"'Resources' object has no attribute '{type_key}'. "
+                    f"This usually means the {schemakey} was not processed. "
+                    f"Check your config files and ensure the database exists."
+                )
+
+        logger.debug(f"Creating Extract from self.{type_key}")
+        result[extractName] = Extract(getattr(self, type_key))
         for prop in self.property_names_processed:
             result[prop] = getattr(self, prop)
         if everything:
@@ -289,14 +355,14 @@ class Resources:
         updateDict = coalesce(updateDict, self.updateDict)
         
         if (data_type not in self.config_dict and config_file_location) or (reReadConfig and config_file_location):
-            logger.info(f"Reading config file {config_file_location} for data_type {data_type}")
+            logger.debug(f"Reading config file {config_file_location} for data_type {data_type}")
             self.read_config(data_type, config_file_location)
-        
+
         schema_dict = self.config_dict[data_type] if data_type in self.config_dict else None
         if updateDict:
-            logger.info(f"Updating the Dictionary for {schema_type} based on the schema {self.config_dict['schemas'][schema_type]}")
+            logger.debug(f"Updating dictionary for {schema_type}")
             tableNameTemplate = coalesce(tableNameTemplate, ("_" + self.disease + "_" + self.schemaTag).lower())
-            logger.info(f"Using the tableNameTemplate: {tableNameTemplate} to remove from the table names")
+            logger.debug(f"tableNameTemplate: {tableNameTemplate}")
             
             funCall = {
                 'schema_dict': schema_dict,
@@ -309,14 +375,14 @@ class Resources:
                 'personid': self.personid,
                 'tableNameTemplate': tableNameTemplate
             }
-            logger.info(f"Use to call update_dictionary \n {pformat(funCall)}")
+            logger.debug(f"update_dictionary funCall: {funCall}")
             try:
                 self.config_dict[data_type] = update_dictionary(**funCall)
             except KeyError as e:
                 logger.error(f"update_dictionary: Couldn't process {data_type}, KeyError: {e}")
         
         if database_exists(self.config_dict['schemas'][schema_type]):
-            logger.info(f"Found schema {schema_type} indicated by schemaTag {self.schemaTag} at {self.config_dict['schemas'][schema_type]}")
+            logger.debug(f"Database exists: {self.config_dict['schemas'][schema_type]}")
             self.processDataTablesFunctionCall = {
                 'dataTables': self.config_dict[data_type],
                 'schema': self.config_dict['schemas'][schema_type],
@@ -327,25 +393,23 @@ class Resources:
                 'parquetLoc': parquetLoc or self.parquetLoc,
                 'debug': self.debug,
             }
-            logger.info(f"Use to call processDataTables")
-            logger.info(f"funCall: {pformat(self.processDataTablesFunctionCall)}")
+            logger.debug(f"processDataTables funCall: {self.processDataTablesFunctionCall}")
             try:
                 setattr(self, type_key, processDataTables(**self.processDataTablesFunctionCall))
                 self.property_names_processed.add(type_key)
-                logger.info(f"processDataTables: processed {type_key} to point to schema {schema_type}")
+                logger.debug(f"Created self.{type_key}")
             except KeyError as e:
-                logger.error(f"processDataTables: Couldn't process {type_key} to point to schema {schema_type}")
-            
+                logger.error(f"Failed to create self.{type_key}: {e}")
+
             try:
                 setattr(self, property_name, DB(self.__dict__, type_key))
                 self.property_names_processed.add(property_name)
-                logger.info(f"processDataTables: processed {property_name} to point to schema {schema_type}")
+                logger.debug(f"Created self.{property_name} (DB wrapper)")
             except Exception as e:
-                logger.error(f"processDataTables: Couldn't add DB object {property_name} to point to schema {schema_type}, Exception: {e}")
-            logger.info(f"processed property names: {self.property_names_processed}")
+                logger.error(f"Failed to create DB wrapper self.{property_name}: {e}")
+            logger.debug(f"Property names processed: {self.property_names_processed}")
         else:
-            logger.info(f"schema not found {schema_type} associated with schemaTag {self.schemaTag} at {self.config_dict['schemas'][schema_type]}")
-            logger.info(f"the schema list schemas in 000-config.yaml has key {schema_type} that does not exist in callFunProcessDataTables")
+            logger.warning(f"Database not found: {self.config_dict['schemas'][schema_type]} (schema_type={schema_type})")
     
     def process_Allmetadata_tables(self):
         in_schemas = ['RWDSchema', 'IUHSchema']
