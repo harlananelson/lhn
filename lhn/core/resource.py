@@ -198,8 +198,10 @@ class Resources:
         self._extract_config_values()
 
         # Initialize table containers
-        self.r = None  # Source data tables (RWD)
-        self.e = None  # Extract tables (project outputs)
+        self.r = None    # Source data tables (RWD)
+        self.e = None    # Extract tables (project outputs)
+        self.rwd = None  # RWD config objects (for creating custom table sets)
+        self.proj = None # Project config objects (for creating custom Extracts)
 
         if finish_init:
             self.finish_init()
@@ -317,10 +319,14 @@ class Resources:
     def finish_init(self):
         """
         Complete initialization by loading data tables.
-        
+
         Called automatically if finish_init=True in __init__.
         Can be called manually if finish_init=False was used.
         """
+        # Create RWD config objects (available even if database doesn't exist)
+        if self.RWDTables:
+            self.rwd = self._create_rwd_config()
+
         # Process RWD (source data) tables
         if self.RWDSchema and self.RWDTables:
             if database_exists(self.RWDSchema):
@@ -334,46 +340,80 @@ class Resources:
                     parquetLoc=self.parquetLoc,
                     debug=self.debug
                 )
-                
+
                 # Also expose tables directly on Resources
                 if self.r:
                     for name in self.r.keys():
                         if not hasattr(self, name):
                             setattr(self, name, getattr(self.r, name))
-                
+
                 logger.info(f"Loaded {len(self.r) if self.r else 0} RWD tables")
             else:
                 logger.warning(f"RWD schema {self.RWDSchema} does not exist")
-        
+
+        # Create project config objects (available even if not processed)
+        if self.projectTables:
+            self.proj = self._create_extract_config()
+
         # Process project (extract) tables
         if self.projectSchema and self.projectTables:
             from lhn.core.extract import Extract
-            self.e = Extract(self._create_extract_config())
+            self.e = Extract(self.proj)
             logger.info(f"Initialized Extract with {len(self.projectTables)} table configs")
     
     def _create_extract_config(self):
-        """Create configuration objects for Extract initialization."""
+        """Create configuration objects for Extract initialization.
+
+        Returns:
+            dict: Config objects keyed by table name, usable with Extract()
+        """
         extract_items = {}
         for name, config in self.projectTables.items():
             # Create an object that can be passed to ExtractItem
             class ConfigObj:
                 pass
             obj = ConfigObj()
-            
+
             # Set base attributes
             obj.name = name
             obj.location = f"{self.projectSchema}.{name}_{self.disease}_{self.schemaTag}"
             obj.label = config.get('label', name)
             obj.csv = f"{self.dataLoc}{name}_{self.disease}_{self.schemaTag}.csv"
             obj.parquet = f"{self.parquetLoc}{name}_{self.disease}_{self.schemaTag}"
-            
+
             # Copy all config attributes
             for key, value in config.items():
                 setattr(obj, key, value)
-            
+
             extract_items[name] = obj
-        
+
         return extract_items
+
+    def _create_rwd_config(self):
+        """Create configuration objects for RWD tables.
+
+        Returns:
+            dict: Config objects keyed by table name
+        """
+        rwd_items = {}
+        for name, config in self.RWDTables.items():
+            class ConfigObj:
+                pass
+            obj = ConfigObj()
+
+            # Set base attributes
+            obj.name = name
+            obj.schema = self.RWDSchema
+            obj.location = config.get('location', f"{self.RWDSchema}.{name}")
+            obj.label = config.get('label', name)
+
+            # Copy all config attributes
+            for key, value in config.items():
+                setattr(obj, key, value)
+
+            rwd_items[name] = obj
+
+        return rwd_items
     
     def refresh(self):
         """Reload configuration and reinitialize tables."""
