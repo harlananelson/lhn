@@ -322,12 +322,140 @@ class Resources:
 
         Called automatically if finish_init=True in __init__.
         Can be called manually if finish_init=False was used.
+
+        Uses callFunProcessDataTables from config to dynamically process
+        all schemas defined in the schemas section.
         """
-        # Create RWD config objects (available even if database doesn't exist)
+        # Track what was processed for summary logging
+        self._missing_schemas = {}
+        self._loaded_schemas = []
+
+        # Get the callFunProcessDataTables config (defines how to process each schema type)
+        callFunProcessDataTables = self.config.get('callFunProcessDataTables', {})
+
+        if callFunProcessDataTables and self.schemas:
+            # Dynamic schema processing via callFunProcessDataTables
+            self._processAllDataTables(callFunProcessDataTables)
+        else:
+            # Fallback: hardcoded RWD/project processing (original behavior)
+            self._process_default_schemas()
+
+        # Create project config objects (available even if not processed)
+        if self.projectTables:
+            self.proj = self._create_extract_config()
+
+        # Process project (extract) tables - create Extract
+        if self.projectSchema and self.projectTables:
+            from lhn.core.extract import Extract
+            self.e = Extract(self.proj)
+            logger.info(f"Initialized Extract with {len(self.projectTables)} table configs")
+
+        # Log summary
+        self._log_processing_summary()
+
+    def _processAllDataTables(self, callFunProcessDataTables):
+        """
+        Process all schemas using callFunProcessDataTables configuration.
+
+        For each schema in self.schemas, finds the matching callFun entry
+        and processes the tables, setting self.{type_key} to the result.
+        """
+        logger.info(f"Processing {len(self.schemas)} schemas: {list(self.schemas.keys())}")
+
+        for schemakey, schemavalue in self.schemas.items():
+            if self.debug:
+                logger.info(f"Processing schema: {schemakey} -> {schemavalue}")
+            try:
+                self._processDataTableBySchemakey(schemakey, callFunProcessDataTables)
+            except Exception as e:
+                logger.error(f"Failed to process {schemakey}: {e}")
+
+    def _find_callFun_for_schema(self, schemakey, callFunProcessDataTables):
+        """Find the callFun entry that matches the given schema key."""
+        for name, callFun in callFunProcessDataTables.items():
+            if callFun.get('schema_type') == schemakey:
+                return callFun
+        return None
+
+    def _processDataTableBySchemakey(self, schemakey, callFunProcessDataTables):
+        """
+        Process a single schema using its callFun configuration.
+
+        Parameters:
+            schemakey (str): The schema key (e.g., 'RWDSchema', 'sstudySchema')
+            callFunProcessDataTables (dict): The callFun configuration
+        """
+        schemavalue = self.schemas.get(schemakey)
+        if not schemavalue:
+            return
+
+        callFun = self._find_callFun_for_schema(schemakey, callFunProcessDataTables)
+        if not callFun:
+            if self.debug:
+                logger.info(f"No callFun found for schema_type={schemakey}")
+            return
+
+        data_type = callFun.get('data_type')      # e.g., 'RWDTables', 'sstudyTables'
+        type_key = callFun.get('type_key')        # e.g., 'r', 'ss'
+        property_name = callFun.get('property_name')  # e.g., 'rwd', 's'
+
+        # Get the table definitions for this data_type
+        dataTables = self.config.get(data_type, {})
+        if not dataTables:
+            if self.debug:
+                logger.info(f"No tables defined for {data_type}")
+            return
+
+        if database_exists(schemavalue):
+            if self.debug:
+                logger.info(f"Database exists: {schemavalue}")
+
+            # Process the tables
+            result = processDataTables(
+                dataTables=dataTables,
+                schema=schemavalue,
+                dataLoc=self.dataLoc,
+                disease=self.disease,
+                schemaTag=self.schemaTag,
+                project=self.project,
+                parquetLoc=self.parquetLoc,
+                debug=self.debug
+            )
+
+            # Set self.{type_key} (e.g., self.r, self.ss)
+            if type_key:
+                setattr(self, type_key, result)
+                self._loaded_schemas.append(f"self.{type_key}")
+                logger.info(f"Loaded self.{type_key} from {schemavalue} ({len(result) if result else 0} tables)")
+
+            # Create config objects and set self.{property_name} (e.g., self.rwd, self.s)
+            if property_name:
+                config_obj = self._create_schema_config(dataTables, schemavalue)
+                setattr(self, property_name, config_obj)
+                if self.debug:
+                    logger.info(f"Created config self.{property_name}")
+
+            # Also expose tables directly on Resources for convenience
+            if result:
+                for name in result.keys():
+                    if not hasattr(self, name):
+                        setattr(self, name, getattr(result, name))
+        else:
+            # Track missing schemas
+            self._missing_schemas[schemakey] = {
+                'database': schemavalue,
+                'type_key': type_key,
+                'property_name': property_name
+            }
+            logger.warning(f"Database not found: {schemavalue} (self.{type_key} unavailable)")
+
+    def _process_default_schemas(self):
+        """Fallback processing when callFunProcessDataTables is not configured."""
+        # Create RWD config objects
         if self.RWDTables:
             self.rwd = self._create_rwd_config()
 
-        # Process RWD (source data) tables
+        # Process RWD tables
         if self.RWDSchema and self.RWDTables:
             if database_exists(self.RWDSchema):
                 self.r = processDataTables(
@@ -341,25 +469,59 @@ class Resources:
                     debug=self.debug
                 )
 
-                # Also expose tables directly on Resources
                 if self.r:
                     for name in self.r.keys():
                         if not hasattr(self, name):
                             setattr(self, name, getattr(self.r, name))
 
+                self._loaded_schemas.append('self.r')
                 logger.info(f"Loaded {len(self.r) if self.r else 0} RWD tables")
             else:
+                self._missing_schemas['RWDSchema'] = {
+                    'database': self.RWDSchema,
+                    'type_key': 'r',
+                    'property_name': 'rwd'
+                }
                 logger.warning(f"RWD schema {self.RWDSchema} does not exist")
 
-        # Create project config objects (available even if not processed)
-        if self.projectTables:
-            self.proj = self._create_extract_config()
+    def _create_schema_config(self, dataTables, schema):
+        """Create configuration objects for a schema's tables.
 
-        # Process project (extract) tables
-        if self.projectSchema and self.projectTables:
-            from lhn.core.extract import Extract
-            self.e = Extract(self.proj)
-            logger.info(f"Initialized Extract with {len(self.projectTables)} table configs")
+        Parameters:
+            dataTables (dict): Table definitions
+            schema (str): Schema/database name
+
+        Returns:
+            dict: Config objects keyed by table name
+        """
+        items = {}
+        for name, config in dataTables.items():
+            class ConfigObj:
+                pass
+            obj = ConfigObj()
+
+            obj.name = name
+            obj.schema = schema
+            obj.location = config.get('location', f"{schema}.{name}")
+            obj.label = config.get('label', name)
+
+            for key, value in config.items():
+                setattr(obj, key, value)
+
+            items[name] = obj
+
+        return items
+
+    def _log_processing_summary(self):
+        """Log a summary of what was processed successfully and what failed."""
+        if self._loaded_schemas:
+            logger.info(f"Successfully loaded: {', '.join(self._loaded_schemas)}")
+
+        if self._missing_schemas:
+            logger.warning("MISSING DATABASES - the following could not be loaded:")
+            for schemakey, info in self._missing_schemas.items():
+                logger.warning(f"  - {schemakey}: database '{info['database']}' not found "
+                             f"(self.{info['type_key']} unavailable)")
     
     def _create_extract_config(self):
         """Create configuration objects for Extract initialization.
