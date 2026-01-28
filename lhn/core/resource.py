@@ -11,7 +11,8 @@ from lhn.header import (
 from spark_config_mapper import (
     read_config,
     processDataTables,
-    database_exists
+    database_exists,
+    getTableList
 )
 
 logger = get_logger(__name__)
@@ -398,9 +399,22 @@ class Resources:
         data_type = callFun.get('data_type')      # e.g., 'RWDTables', 'sstudyTables'
         type_key = callFun.get('type_key')        # e.g., 'r', 'ss'
         property_name = callFun.get('property_name')  # e.g., 'rwd', 's'
+        updateDict = callFun.get('updateDict', False)
+        tableNameTemplate = callFun.get('tableNameTemplate')
 
         # Get the table definitions for this data_type
         dataTables = self.config.get(data_type, {})
+
+        # If updateDict is True, auto-discover tables from the schema
+        if updateDict and not dataTables:
+            if database_exists(schemavalue):
+                dataTables = self._discover_tables(schemavalue, tableNameTemplate)
+                if self.debug:
+                    logger.info(f"Auto-discovered {len(dataTables)} tables for {data_type}")
+            else:
+                if self.debug:
+                    logger.info(f"Cannot auto-discover tables: database {schemavalue} doesn't exist")
+
         if not dataTables:
             if self.debug:
                 logger.info(f"No tables defined for {data_type}")
@@ -511,6 +525,65 @@ class Resources:
             items[name] = obj
 
         return items
+
+    def _discover_tables(self, schema, tableNameTemplate=None):
+        """
+        Auto-discover tables in a schema and create table definitions.
+
+        Used when updateDict=True to automatically create table configs
+        from all tables in the schema. Useful for reading another project's
+        datasets as-is without manually defining each table.
+
+        Parameters:
+            schema (str): Schema/database name to scan
+            tableNameTemplate (str): Optional regex pattern to filter/transform
+                table names. If provided, only matching tables are included
+                and the pattern extracts the base name.
+
+        Returns:
+            dict: Table definitions suitable for processDataTables
+        """
+        import re
+
+        tableList = getTableList(schema)
+        dataTables = {}
+
+        # Compile pattern if provided
+        pattern = None
+        if tableNameTemplate:
+            try:
+                pattern = re.compile(rf"^(.*?){tableNameTemplate}")
+            except re.error as e:
+                logger.warning(f"Invalid tableNameTemplate pattern: {e}")
+
+        for table_location in tableList:
+            # table_location is like "schema.tablename"
+            if '.' in table_location:
+                table_name = table_location.split('.', 1)[-1]
+            else:
+                table_name = table_location
+
+            # Apply pattern filtering if provided
+            config_key = table_name
+            if pattern:
+                match = pattern.match(table_name)
+                if match:
+                    config_key = match.group(1).rstrip('_')
+                # If no match and pattern provided, still include with original name
+
+            # Avoid duplicates
+            if config_key in dataTables:
+                continue
+
+            dataTables[config_key] = {
+                'source': table_name,
+                'label': table_name
+            }
+
+        if self.debug:
+            logger.info(f"Discovered {len(dataTables)} tables in {schema}")
+
+        return dataTables
 
     def _log_processing_summary(self):
         """Log a summary of what was processed successfully and what failed."""
