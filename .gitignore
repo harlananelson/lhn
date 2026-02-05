@@ -181,3 +181,9 @@ devenv.lock        # sometimes people commit, often not
 
 # Optional: cachix / other binary cache push results
 cache.json
+
+# ───────────────────────────────────────────────
+# Claude Code / local tooling
+# ───────────────────────────────────────────────
+.claude/
+.logs/
