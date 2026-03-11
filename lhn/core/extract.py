@@ -258,6 +258,54 @@ class ExtractItem(SharedMethodsMixin):
             howjoin=howjoin
         )
     
+    def entityExtract(self, entitySource, elementIndex=None,
+                      datefieldSource=None, histStart=None, histStop=None,
+                      datefieldElement=None, masterList=None,
+                      howjoin='inner', cacheResult=True, broadcast_flag=True,
+                      set_self_df=True):
+        """
+        Extract records from a source table using this item as the index.
+
+        Convenience wrapper around identify_target_records that uses
+        self.df as the index (cohort/element) table.
+
+        Parameters:
+            entitySource: Source DataFrame (or object with df attribute)
+            elementIndex (list): Columns for join (default: self.indexFields)
+            datefieldSource (str): Date column in source for filtering
+            histStart: Start date/offset
+            histStop: Stop date/offset
+            datefieldElement (str): Date column in self.df for offsets
+            masterList (list): Columns to include in output
+            howjoin (str): Join type
+            cacheResult (bool): Cache result DataFrame
+            broadcast_flag (bool): Broadcast index for join
+            set_self_df (bool): If True, assign result back to self.df
+
+        Returns:
+            DataFrame: Extracted records
+        """
+        if elementIndex is None:
+            elementIndex = getattr(self, 'indexFields', ['personid'])
+
+        result = self.identify_target_records(
+            entitySource=entitySource,
+            elementIndex=elementIndex,
+            datefieldSource=datefieldSource,
+            histStart=histStart,
+            histStop=histStop,
+            datefieldElement=datefieldElement,
+            cacheResult=cacheResult,
+            broadcast_flag=broadcast_flag,
+            masterList=masterList,
+            howjoin=howjoin
+        )
+
+        if set_self_df and result is not None:
+            self.df = result
+
+        return result
+
     def create_extract(self, elementList, elementListSource,
                        find_method='regex', sourceField=None):
         """

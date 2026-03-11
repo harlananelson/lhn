@@ -113,8 +113,8 @@ def group_gender(df, column_name, result_column_name):
         DataFrame: DataFrame with standardized gender
     """
     return df.withColumn(result_column_name,
-        F.when(F.col(column_name).rlike('(?i)^m|male'), 'Male')
-        .when(F.col(column_name).rlike('(?i)^f|female'), 'Female')
+        F.when(F.col(column_name).rlike('(?i)^male$|^m$'), 'Male')
+        .when(F.col(column_name).rlike('(?i)^female$|^f$'), 'Female')
         .otherwise('Other/Unknown')
     )
 
@@ -159,28 +159,21 @@ def assign_age_group(df, age_column, result_column_name,
         bins = [0, 18, 35, 50, 65, 80, 200]
     if labels is None:
         labels = ['<18', '18-34', '35-49', '50-64', '65-79', '80+']
-    
-    # Build case expression
-    conditions = []
-    for i in range(len(labels)):
-        conditions.append(
-            F.when(
-                (F.col(age_column) >= bins[i]) & (F.col(age_column) < bins[i+1]),
-                labels[i]
-            )
-        )
-    
-    # Chain conditions
-    result = conditions[0]
-    for cond in conditions[1:]:
-        result = result.when(cond._jc.expr().child(), labels[conditions.index(cond)])
-    
-    # Simpler approach using nested when
-    return df.withColumn(result_column_name,
-        F.when(F.col(age_column) < 18, '<18')
-        .when(F.col(age_column) < 35, '18-34')
-        .when(F.col(age_column) < 50, '35-49')
-        .when(F.col(age_column) < 65, '50-64')
-        .when(F.col(age_column) < 80, '65-79')
-        .otherwise('80+')
+
+    if len(labels) != len(bins) - 1:
+        raise ValueError(
+            "labels must have exactly len(bins)-1 elements. "
+            "Got {} labels for {} bins.".format(len(labels), len(bins)))
+
+    # Build chained when expression from bins/labels
+    age_col = F.col(age_column)
+    expr = F.when(
+        (age_col >= bins[0]) & (age_col < bins[1]), labels[0]
     )
+    for i in range(1, len(labels)):
+        expr = expr.when(
+            (age_col >= bins[i]) & (age_col < bins[i + 1]), labels[i]
+        )
+    expr = expr.otherwise('Unknown')
+
+    return df.withColumn(result_column_name, expr)
