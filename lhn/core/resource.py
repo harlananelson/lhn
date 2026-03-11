@@ -10,6 +10,7 @@ from lhn.header import (
 )
 from spark_config_mapper import (
     read_config,
+    merge_configs,
     processDataTables,
     database_exists,
     getTableList
@@ -238,14 +239,14 @@ class Resources:
             )
     
     def _load_configs(self):
-        """Load and merge configuration files."""
+        """Load and deep-merge configuration files."""
         config = {}
         configs_loaded = []
 
         # Load global config first (lowest priority)
         if self.global_config_path and self.global_config_path.exists():
             global_cfg = read_config(str(self.global_config_path), self.replace, self.debug)
-            config.update(global_cfg)
+            config = merge_configs(config, global_cfg)
             configs_loaded.append(('global', self.global_config_path))
             if self.debug:
                 logger.info(f"Loaded global config from {self.global_config_path}")
@@ -253,7 +254,7 @@ class Resources:
         # Load schema-specific config (medium priority)
         if self.schemaTag_config_path and self.schemaTag_config_path.exists():
             schema_cfg = read_config(str(self.schemaTag_config_path), self.replace, self.debug)
-            config.update(schema_cfg)
+            config = merge_configs(config, schema_cfg)
             configs_loaded.append(('schema', self.schemaTag_config_path))
             if self.debug:
                 logger.info(f"Loaded schema config from {self.schemaTag_config_path}")
@@ -261,7 +262,7 @@ class Resources:
         # Load local project config (highest priority)
         if self.local_config_path and self.local_config_path.exists():
             local_cfg = read_config(str(self.local_config_path), self.replace, self.debug)
-            config.update(local_cfg)
+            config = merge_configs(config, local_cfg)
             configs_loaded.append(('local', self.local_config_path))
             if self.debug:
                 logger.info(f"Loaded local config from {self.local_config_path}")

@@ -249,6 +249,71 @@ class SharedMethodsMixin:
             self.df.unpersist()
         return self
     
+    def tabulate(self, group_cols=None, count_distinct=None,
+                  order_by='count', limit=50, dropna=False, show=False):
+        """
+        Create a tabulation summary of the DataFrame.
+
+        Returns a Spark DataFrame with counts (and optional distinct counts)
+        grouped by specified columns. Does not call toPandas() by default
+        to avoid driver OOM on clinical-scale data.
+
+        Parameters:
+            group_cols (str|list): Column(s) to group by. If None, returns
+                total count and optional distinct count.
+            count_distinct (str): Column for distinct count (e.g., 'personid')
+            order_by (str): 'count' to sort by count desc, 'group' to sort by
+                group columns asc, or a column name
+            limit (int): Maximum rows to return
+            dropna (bool): Drop null values in group columns before counting
+            show (bool): If True, display the result table
+
+        Returns:
+            DataFrame: Summary DataFrame with counts
+        """
+        if not hasattr(self, 'df') or self.df is None:
+            logger.error("No DataFrame available")
+            return None
+
+        df = self.df
+
+        if dropna and group_cols:
+            cols = [group_cols] if isinstance(group_cols, str) else group_cols
+            for c in cols:
+                if c in df.columns:
+                    df = df.filter(F.col(c).isNotNull())
+
+        if group_cols:
+            if isinstance(group_cols, str):
+                group_cols = [group_cols]
+            result = df.groupBy(group_cols).agg(F.count('*').alias('count'))
+            if count_distinct and count_distinct in df.columns:
+                result = df.groupBy(group_cols).agg(
+                    F.count('*').alias('count'),
+                    F.countDistinct(count_distinct).alias(f'n_{count_distinct}')
+                )
+        else:
+            aggs = [F.count('*').alias('count')]
+            if count_distinct and count_distinct in df.columns:
+                aggs.append(F.countDistinct(count_distinct).alias(f'n_{count_distinct}'))
+            result = df.agg(*aggs)
+
+        # Sort
+        if group_cols and order_by == 'count':
+            result = result.orderBy(F.desc('count'))
+        elif group_cols and order_by == 'group':
+            result = result.orderBy(group_cols)
+        elif group_cols and order_by in result.columns:
+            result = result.orderBy(F.desc(order_by))
+
+        if limit:
+            result = result.limit(limit)
+
+        if show:
+            result.show(limit, truncate=False)
+
+        return result
+
     def properties(self) -> dict:
         """Return dictionary of object properties."""
         return {k: v for k, v in self.__dict__.items() 
