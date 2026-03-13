@@ -103,9 +103,7 @@ class ExtractItem(SharedMethodsMixin):
         if not hasattr(self, '_df') or self._df is None:
             if hasattr(self, 'location'):
                 try:
-                    from spark_config_mapper import check_table_existence
-                    if check_table_existence(self.location):
-                        self._df = spark.table(self.location)
+                    self._df = spark.table(self.location)
                 except Exception as e:
                     logger.debug(f"Could not load {self.location}: {e}")
         return self._df if hasattr(self, '_df') else None
