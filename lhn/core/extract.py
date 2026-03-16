@@ -6,12 +6,13 @@ Provides methods for creating, processing, and analyzing extracted data.
 """
 
 from lhn.header import (
-    spark, F, re, time, pd, pprint, display, Markdown, 
+    spark, F, re, time, pd, pprint, display, Markdown,
     copy, get_logger, StringType, DataFrame
 )
 from lhn.core.shared_methods import SharedMethodsMixin
 from spark_config_mapper import (
-    writeTable, coalesce, setFunctionParameters, fields_reconcile
+    writeTable, coalesce, setFunctionParameters, fields_reconcile,
+    noColColide
 )
 
 logger = get_logger(__name__)
@@ -260,7 +261,9 @@ class ExtractItem(SharedMethodsMixin):
                       datefieldSource=None, histStart=None, histStop=None,
                       datefieldElement=None, masterList=None,
                       howjoin='inner', cacheResult=True, broadcast_flag=True,
-                      set_self_df=True):
+                      set_self_df=True,
+                      cohort=None, cohortColumns=None,
+                      howCohortJoin='inner'):
         """
         Extract records from a source table using this item as the index.
 
@@ -279,6 +282,12 @@ class ExtractItem(SharedMethodsMixin):
             cacheResult (bool): Cache result DataFrame
             broadcast_flag (bool): Broadcast index for join
             set_self_df (bool): If True, assign result back to self.df
+            cohort: Optional cohort object (with .df, .indexFields) to
+                filter entitySource to cohort members before extraction.
+                Restored from v0.1.0 — this parameter was lost in refactoring.
+            cohortColumns (list): Columns to select from cohort.df. If None,
+                uses cohort.df.columns.
+            howCohortJoin (str): Join type for cohort join (default: 'inner')
 
         Returns:
             DataFrame: Extracted records
@@ -286,8 +295,39 @@ class ExtractItem(SharedMethodsMixin):
         if elementIndex is None:
             elementIndex = getattr(self, 'indexFields', ['personid'])
 
+        # Get the actual DataFrame from entitySource
+        if hasattr(entitySource, 'df'):
+            entity_df = entitySource.df
+        else:
+            entity_df = entitySource
+
+        # Cohort filtering (restored from v0.1.0)
+        if cohort is not None:
+            logger.info("entityExtract: Using cohort filter")
+
+            if cohortColumns is None:
+                if hasattr(self, 'cohortColumns'):
+                    cohortColumns = self.cohortColumns
+                else:
+                    cohortColumns = cohort.df.columns
+
+            # Reconcile columns to prevent duplicates
+            entitySourceSelect = noColColide(
+                entity_df.columns, cohortColumns,
+                cohort.indexFields, masterList=None
+            )
+
+            entity_df = (
+                entity_df.select(entitySourceSelect)
+                .join(
+                    cohort.df.select(cohortColumns),
+                    on=cohort.indexFields,
+                    how=howCohortJoin
+                )
+            )
+
         result = self.identify_target_records(
-            entitySource=entitySource,
+            entitySource=entity_df,
             elementIndex=elementIndex,
             datefieldSource=datefieldSource,
             histStart=histStart,
@@ -303,6 +343,27 @@ class ExtractItem(SharedMethodsMixin):
             self.df = result
 
         return result
+
+    def writeTBL(self):
+        """Write DataFrame to Spark table. Alias for v0.1.0 compatibility.
+
+        Skips if DataFrame is empty. Re-reads from table after writing
+        to ensure Spark metadata is consistent.
+        """
+        if not hasattr(self, 'df') or self.df is None:
+            logger.error("No DataFrame to write")
+            return
+
+        if self.df.rdd.isEmpty():
+            print("DataFrame is empty. Skipping write operation.")
+        else:
+            partition = getattr(self, 'partitionBy', None)
+            description = getattr(self, 'label', '')
+            writeTable(
+                self.df, self.location,
+                description=description, partitionBy=partition
+            )
+            self.df = spark.table(self.location)
 
     def create_extract(self, elementList, elementListSource,
                        find_method='regex', sourceField=None):
