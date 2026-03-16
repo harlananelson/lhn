@@ -61,6 +61,43 @@ from spark_config_mapper import (
     setFunctionParameters
 )
 
+# Helper functions (restored from v0.1.0)
+from lhn.helpers import (
+    print_pd,
+    showIU,
+    attrition,
+    count_people,
+    print_parameters,
+    noRowNum,
+    show_first
+)
+
+# Analytical functions (restored from v0.1.0)
+from lhn.analytics import (
+    five_number_summary,
+    calculate_chi_squared,
+    stackedSpark,
+    countDistinct,
+    count_and_pivot,
+    aggregate_fields,
+    aggregate_fields_count,
+    groupCount
+)
+
+# Plot functions (restored from v0.1.0)
+from lhn.plot import (
+    plotByTime,
+    plot_counts,
+    plotTopEntities,
+    count as plot_count
+)
+
+# Feature engineering (restored from v0.1.0)
+from lhn.features import (
+    select_only_baseline,
+    analyze_clinical_measurements
+)
+
 # Logging
 from lhn.header import get_logger, spark
 
@@ -91,6 +128,31 @@ __all__ = [
     'coalesce',
     'noColColide',
     'setFunctionParameters',
+    # Helpers (restored from v0.1.0)
+    'print_pd',
+    'showIU',
+    'attrition',
+    'count_people',
+    'print_parameters',
+    'noRowNum',
+    'show_first',
+    # Analytics (restored from v0.1.0)
+    'five_number_summary',
+    'calculate_chi_squared',
+    'stackedSpark',
+    'countDistinct',
+    'count_and_pivot',
+    'aggregate_fields',
+    'aggregate_fields_count',
+    'groupCount',
+    # Plotting (restored from v0.1.0)
+    'plotByTime',
+    'plot_counts',
+    'plotTopEntities',
+    'plot_count',
+    # Feature engineering (restored from v0.1.0)
+    'select_only_baseline',
+    'analyze_clinical_measurements',
     # Spark session
     'spark',
     'get_logger'
