@@ -112,21 +112,42 @@ class ExtractItem(SharedMethodsMixin):
     @df.setter
     def df(self, value):
         self._df = value
-        # Auto-write to Hive when location and label are configured
-        # (restored from v0.1.0 behavior)
-        if (value is not None
+
+    def _auto_write(self):
+        """Write self.df to Hive if location and label are configured.
+
+        Called by extract methods (create_extract, entityExtract, write_index_table,
+        dict2pyspark) after they set self.df. NOT called by the df setter — manual
+        df assignments don't auto-write (use .write() explicitly for those).
+
+        Before writing, creates a temporary table to break read-write lineage.
+        This avoids the Hive "Cannot overwrite table that is also being read from"
+        error that occurs when the new df was derived from the same table.
+        """
+        if (self._df is not None
                 and getattr(self, 'location', None)
                 and getattr(self, 'label', None)):
             try:
-                from spark_config_mapper import writeTable
+                # Break lineage: write to a temp table first, then overwrite target.
+                # This avoids "Cannot overwrite table being read from" when the new df
+                # was derived from reading the same table (e.g., lazy-loaded then filtered).
+                temp_name = self.location + "_tmp"
+                self._df.write.saveAsTable(temp_name, mode='overwrite')
+                temp_df = spark.table(temp_name)
+
                 partition = getattr(self, 'partitionBy', None)
-                writeTable(value, self.location,
+                writeTable(temp_df, self.location,
                            description=self.label, partitionBy=partition)
-                # Re-read from Hive for consistent metadata
+
+                # Clean up temp table
+                try:
+                    spark.sql(f"DROP TABLE IF EXISTS {temp_name}")
+                except Exception:
+                    pass
+
                 self._df = spark.table(self.location)
                 logger.info(f"Auto-wrote {self.location}")
             except Exception as ex:
-                # Don't fail the assignment — log and keep the in-memory df
                 logger.warning(f"Auto-write failed for {self.location}: {ex}")
     
     def write_index_table(self, inTable, histStart=None, histEnd=None,
@@ -182,7 +203,8 @@ class ExtractItem(SharedMethodsMixin):
             indexLabel=indexLabel,
             lastLabel=lastLabel
         )
-    
+        self._auto_write()
+
     def load_csv_as_df(self, dtype=None, names=None, header=0,
                        drop_missing=False, how='any', subset=None,
                        thresh=None, normalize_unicode=True):
@@ -357,6 +379,7 @@ class ExtractItem(SharedMethodsMixin):
 
         if set_self_df and result is not None:
             self.df = result
+            self._auto_write()
 
         return result
 
@@ -437,6 +460,9 @@ class ExtractItem(SharedMethodsMixin):
             valid = [c for c in keep if c in self.df.columns]
             if valid:
                 self.df = self.df.select(valid)
+
+        # Auto-persist to Hive
+        self._auto_write()
 
     def _extract_by_regex(self, patterns, source, field):
         """Extract records matching regex patterns, preserving group labels.
@@ -522,3 +548,4 @@ class ExtractItem(SharedMethodsMixin):
             self.pd = dict2Pandas(self.dictionary, columnname=columnname)
             self.pd = self.pd.reset_index().rename(columns={'index': 'group'})
             self.df = spark.createDataFrame(self.pd)
+            self._auto_write()
