@@ -656,6 +656,96 @@ class Resources:
         self.config = self._load_configs()
         self._extract_config_values()
         self.finish_init()
+
+    def load_into_local(self, everything=False, load_schemas=True):
+        """
+        Return a dict of objects for injection into notebook locals.
+
+        Usage in Jupyter notebook::
+
+            locals().update(resource.load_into_local())
+            # Now e, r, and any other processed namespaces are local variables
+
+        With schema names::
+
+            locals().update(resource.load_into_local())
+            spark.table(f"{projectSchema}.my_table")
+
+        Parameters:
+            everything (bool): If True, include all top-level config values
+                (disease, schemaTag, dataLoc, etc.) in addition to objects.
+            load_schemas (bool): If True (default), include schema name strings
+                (RWDSchema, projectSchema, etc.) as local variables.
+
+        Returns:
+            dict: Keys are variable names, values are the objects/strings.
+        """
+        result = {}
+
+        # Always include Extract (e) if available
+        if self.e is not None:
+            result['e'] = self.e
+
+        # Include all processed type_key objects (r, rwds, rwdn, dictrwd, etc.)
+        callFuns = self.config.get('callFunProcessDataTables', {})
+        for name, callFun in callFuns.items():
+            type_key = callFun.get('type_key')
+            if type_key and hasattr(self, type_key) and getattr(self, type_key) is not None:
+                result[type_key] = getattr(self, type_key)
+            property_name = callFun.get('property_name')
+            if property_name and hasattr(self, property_name) and getattr(self, property_name) is not None:
+                result[property_name] = getattr(self, property_name)
+
+        # Fallback: include r and rwd if callFuns didn't produce them
+        if 'r' not in result and self.r is not None:
+            result['r'] = self.r
+        if 'rwd' not in result and self.rwd is not None:
+            result['rwd'] = self.rwd
+
+        # Include resource itself for reread_config_files access
+        result['resource'] = self
+
+        # Include schema name strings (RWDSchema, projectSchema, etc.)
+        if load_schemas and self.schemas:
+            result.update(self.schemas)
+
+        # Include project-level config values
+        if everything:
+            for key in ['disease', 'schemaTag', 'project', 'dataLoc',
+                        'parquetLoc', 'warehouse']:
+                val = getattr(self, key, None)
+                if val is not None and key not in result:
+                    result[key] = val
+            # Also include the full config dict under 'config'
+            result['config'] = self.config
+
+        logger.info(
+            f"load_into_local: {len(result)} items "
+            f"({', '.join(sorted(result.keys()))})"
+        )
+        return result
+
+    def reread_config_files(self, **kwargs):
+        """
+        Re-read all YAML config files from disk and reinitialize.
+
+        Usage in Jupyter notebook (hot reload after editing YAML)::
+
+            # Edit 000-control.yaml (add table, change retained_fields, etc.)
+            locals().update(resource.reread_config_files())
+            # Environment now reflects updated config — no kernel restart
+
+        Parameters:
+            **kwargs: Passed to load_into_local (everything, load_schemas).
+
+        Returns:
+            dict: Updated objects for locals().update().
+        """
+        logger.info("reread_config_files: Reloading all config files from disk")
+        self.config = self._load_configs()
+        self._extract_config_values()
+        self.finish_init()
+        return self.load_into_local(**kwargs)
     
     def get_table(self, name):
         """
