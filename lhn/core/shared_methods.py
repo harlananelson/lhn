@@ -82,29 +82,38 @@ class SharedMethodsMixin:
                   date_field: str = None):
         """
         Display attrition statistics for the DataFrame.
-        
+
         Shows record count, unique person count, and date range if applicable.
-        
+
         Parameters:
             person_id (str): Column name for person identifier
-            description (str): Description for the display
-            date_field (str): Optional date field for range reporting
+            description (str): Description for the display. Falls back to
+                self.label from config.
+            date_field (str): Date field for range reporting. Falls back to
+                self.datefieldPrimary from config.
         """
         if not hasattr(self, 'df') or self.df is None:
             print("No DataFrame available")
             return
-        
+
         df = self.df
         desc = description or getattr(self, 'label', 'Unknown')
-        
+
+        # Fall back to config datefieldPrimary if not specified
+        if date_field is None:
+            date_field = getattr(self, 'datefieldPrimary', None)
+            # datefieldPrimary may be a list — take first element
+            if isinstance(date_field, list) and date_field:
+                date_field = date_field[0]
+
         count_records = df.count()
         display(Markdown(f"**{desc}**"))
         display(Markdown(f"* {count_records:,} records"))
-        
+
         if person_id in df.columns:
             count_people = df.select(person_id).distinct().count()
             display(Markdown(f"* {count_people:,} unique by {person_id}"))
-        
+
         if date_field and date_field in df.columns:
             date_stats = df.select(
                 F.min(date_field), F.max(date_field)
