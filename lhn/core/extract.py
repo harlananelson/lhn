@@ -112,6 +112,22 @@ class ExtractItem(SharedMethodsMixin):
     @df.setter
     def df(self, value):
         self._df = value
+        # Auto-write to Hive when location and label are configured
+        # (restored from v0.1.0 behavior)
+        if (value is not None
+                and getattr(self, 'location', None)
+                and getattr(self, 'label', None)):
+            try:
+                from spark_config_mapper import writeTable
+                partition = getattr(self, 'partitionBy', None)
+                writeTable(value, self.location,
+                           description=self.label, partitionBy=partition)
+                # Re-read from Hive for consistent metadata
+                self._df = spark.table(self.location)
+                logger.info(f"Auto-wrote {self.location}")
+            except Exception as ex:
+                # Don't fail the assignment — log and keep the in-memory df
+                logger.warning(f"Auto-write failed for {self.location}: {ex}")
     
     def write_index_table(self, inTable, histStart=None, histEnd=None,
                           indexLabel="index", lastLabel="last",
