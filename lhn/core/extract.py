@@ -389,8 +389,11 @@ class ExtractItem(SharedMethodsMixin):
             self.df: Matched records, filtered to retained_fields if configured.
         """
         # Read config defaults for any unspecified parameters
-        find_method = find_method or getattr(self, 'find_method', 'regex')
-        sourceField = sourceField or getattr(self, 'sourceField', None)
+        # Use 'is None' not 'or' to avoid swallowing falsy-but-intentional values
+        if find_method is None:
+            find_method = getattr(self, 'find_method', 'regex')
+        if sourceField is None:
+            sourceField = getattr(self, 'sourceField', None)
 
         if find_method == 'regex':
             if sourceField is None:
@@ -460,7 +463,18 @@ class ExtractItem(SharedMethodsMixin):
         if results:
             self.df = results[0]
             for additional in results[1:]:
-                self.df = self.df.unionByName(additional, allowMissingColumns=True)
+                try:
+                    # PySpark >= 3.1
+                    self.df = self.df.unionByName(additional, allowMissingColumns=True)
+                except TypeError:
+                    # PySpark 2.4 — align schemas manually before union
+                    all_cols = set(self.df.columns) | set(additional.columns)
+                    def _align(df, cols):
+                        return df.select([
+                            F.col(c) if c in df.columns else F.lit(None).alias(c)
+                            for c in sorted(cols)
+                        ])
+                    self.df = _align(self.df, all_cols).union(_align(additional, all_cols))
         else:
             logger.warning("No patterns provided to _extract_by_regex")
             self.df = source.limit(0)
