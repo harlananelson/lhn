@@ -388,3 +388,40 @@ class SharedMethodsMixin:
 
         pdf = result.limit(obs).toPandas()
         display(pdf.style.hide(axis='index'))
+
+    def plotByTime(self, datefield=None, title=None, grouping=None, **kwargs):
+        """
+        Plot record volume over time using lhn.plot.plotByTime.
+
+        Convenience method that passes self.df to the standalone plotByTime
+        function with config-driven defaults.
+
+        Parameters:
+            datefield (str): Date column. Falls back to self.datefieldPrimary.
+            title (str): Plot title. Falls back to self.label.
+            grouping (str): Column for color grouping (e.g., 'group').
+            **kwargs: Additional arguments passed to lhn.plot.plotByTime
+                (date_low, useLog, time_group, plot_lib, etc.)
+
+        Returns:
+            plotnine ggplot or plotly Figure
+        """
+        if self.df is None:
+            logger.error("No DataFrame available for plotting")
+            return None
+
+        from lhn.plot import plotByTime as _plotByTime
+
+        if datefield is None:
+            datefield = getattr(self, 'datefieldPrimary', None)
+            if isinstance(datefield, list) and datefield:
+                datefield = datefield[0]
+        if datefield is None:
+            logger.error("No datefield specified and no datefieldPrimary in config")
+            return None
+
+        if title is None:
+            title = getattr(self, 'label', '')
+
+        return _plotByTime(self.df, datefield=datefield, title=title,
+                           grouping=grouping, **kwargs)
