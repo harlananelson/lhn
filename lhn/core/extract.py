@@ -365,44 +365,106 @@ class ExtractItem(SharedMethodsMixin):
             )
             self.df = spark.table(self.location)
 
-    def create_extract(self, elementList, elementListSource,
-                       find_method='regex', sourceField=None):
+    def create_extract(self, elementList=None, elementListSource=None,
+                       find_method=None, sourceField=None):
         """
         Create an extract by matching elements against a source.
-        
+
+        All parameters fall back to config-defined attributes (from YAML) when
+        not passed explicitly. This enables config-driven extraction where the
+        notebook just calls ``e.foo.create_extract(e.bar, d.baz.df)`` and
+        sourceField, retained_fields, etc. come from the YAML.
+
         Parameters:
-            elementList: List/dict/ExtractItem of search patterns
-            elementListSource: DataFrame to search
-            find_method (str): 'regex' or 'merge'
-            sourceField (str): Field to search in (for regex)
-        
+            elementList: List/dict/ExtractItem of search patterns.
+                Falls back to self.elementList.
+            elementListSource: DataFrame to search (typically a dictionary table).
+                Falls back to self.elementListSource (must be a DataFrame, not a string).
+            find_method (str): 'regex' or 'merge'. Falls back to self.find_method,
+                then defaults to 'regex'.
+            sourceField (str): Field to search in (for regex). Falls back to
+                self.sourceField.
+
         Sets:
-            self.df: Matched records
+            self.df: Matched records, filtered to retained_fields if configured.
         """
-        # Implementation depends on find_method
+        # Read config defaults for any unspecified parameters
+        find_method = find_method or getattr(self, 'find_method', 'regex')
+        sourceField = sourceField or getattr(self, 'sourceField', None)
+
         if find_method == 'regex':
+            if sourceField is None:
+                raise ValueError(
+                    f"sourceField is required for regex extraction on "
+                    f"'{getattr(self, 'name', 'unknown')}'. "
+                    f"Pass it explicitly or define 'sourceField' in config."
+                )
             self._extract_by_regex(elementList, elementListSource, sourceField)
         elif find_method == 'merge':
             self._extract_by_merge(elementList, elementListSource)
-    
-    def _extract_by_regex(self, patterns, source, field):
-        """Extract records matching regex patterns."""
-        if isinstance(patterns, list):
-            pattern_list = patterns
-        elif isinstance(patterns, dict):
-            pattern_list = list(patterns.values())
-        elif hasattr(patterns, 'df'):
-            pattern_list = patterns.df.select(
-                getattr(patterns, 'listIndex', 'pattern')
-            ).rdd.flatMap(lambda x: x).collect()
         else:
-            pattern_list = [str(patterns)]
-        
-        # Build combined regex
-        combined = '|'.join(f'({p})' for p in pattern_list)
-        
-        self.df = source.filter(F.col(field).rlike(combined))
-    
+            raise ValueError(f"Unknown find_method: '{find_method}'. Use 'regex' or 'merge'.")
+
+        # Apply retained_fields filter if configured
+        retained = getattr(self, 'retained_fields', None)
+        if retained and self.df is not None:
+            # Always keep join keys and group column alongside retained fields
+            index_fields = getattr(self, 'indexFields', [])
+            keep = list(set(retained + index_fields))
+            # Add 'group' if it exists (from regex group preservation)
+            if 'group' in self.df.columns and 'group' not in keep:
+                keep.append('group')
+            # Only select columns that actually exist in the DataFrame
+            valid = [c for c in keep if c in self.df.columns]
+            if valid:
+                self.df = self.df.select(valid)
+
+    def _extract_by_regex(self, patterns, source, field):
+        """Extract records matching regex patterns, preserving group labels.
+
+        Uses iterate-per-group + union approach: each pattern is applied
+        individually with its group label, then results are unioned. This
+        preserves which group each matched row belongs to.
+
+        For small pattern tables (typical: 4-20 patterns), this is efficient
+        and avoids cross-join or combined-regex approaches that lose grouping.
+
+        Parameters:
+            patterns: ExtractItem (with .df containing 'group' + pattern columns),
+                dict (group_name -> pattern), or list of patterns.
+            source: DataFrame to search (should be a dictionary table, not
+                patient-level data, for performance).
+            field (str): Column in source to match against.
+        """
+        if hasattr(patterns, 'df'):
+            # ExtractItem with DataFrame — has 'group' and pattern columns
+            list_index = getattr(patterns, 'listIndex', 'codes')
+            rows = patterns.df.select('group', list_index).collect()
+            group_patterns = [(row['group'], row[list_index]) for row in rows]
+        elif isinstance(patterns, dict):
+            # dict: group_name -> regex_pattern
+            group_patterns = list(patterns.items())
+        elif isinstance(patterns, list):
+            # plain list — no group info, assign sequential group names
+            group_patterns = [(f'group_{i}', p) for i, p in enumerate(patterns)]
+        else:
+            group_patterns = [('default', str(patterns))]
+
+        # Iterate per group, filter, add group label, union
+        results = []
+        for group_name, pattern in group_patterns:
+            matched = source.filter(F.col(field).rlike(pattern))
+            matched = matched.withColumn('group', F.lit(group_name))
+            results.append(matched)
+
+        if results:
+            self.df = results[0]
+            for additional in results[1:]:
+                self.df = self.df.unionByName(additional, allowMissingColumns=True)
+        else:
+            logger.warning("No patterns provided to _extract_by_regex")
+            self.df = source.limit(0)
+
     def _extract_by_merge(self, element_list, source):
         """Extract records by merging with element list."""
         if hasattr(element_list, 'df'):
@@ -413,8 +475,9 @@ class ExtractItem(SharedMethodsMixin):
             )
         else:
             merge_df = element_list
-        
-        join_col = getattr(self, 'merge_column', 'code')
+
+        join_col = getattr(self, 'listIndex',
+                           getattr(self, 'merge_column', 'code'))
         self.df = source.join(merge_df, on=join_col, how='inner')
     
     def dict2pyspark(self, columnname=['codes']):
