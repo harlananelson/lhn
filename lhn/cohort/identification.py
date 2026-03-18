@@ -21,94 +21,214 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
                       indexLabel="index_", lastLabel="last_"):
     """
     Create a cohort-style index table identifying first/last events per entity.
-    
-    This function identifies the first (index) and last dates for each entity
-    (typically a patient) based on the specified date field, with optional
-    date filtering.
-    
+
+    Identifies the first (index) and last dates for each entity (typically a
+    patient). When ``max_gap`` is specified, also computes therapy segmentation:
+    periods of continuous care separated by gaps exceeding ``max_gap`` days.
+
     Parameters:
         inTable (DataFrame): Source data with events
         index_field (list): Fields defining unique entities (e.g., ['personid'])
         retained_fields (list): Additional fields to retain
         datefieldPrimary (list or str): Date field(s) for ordering
-        code (str): Tag for naming output fields
-        datefieldStop (str, optional): End date field for range
+        code (str): Tag for naming output fields (e.g., 'SCD')
+        datefieldStop (str, optional): End date field (e.g., medication stop date).
+            If None, uses datefieldPrimary.
         sort_fields (list, optional): Additional sort criteria
         histStart (str): Start date filter
         histEnd (str): End date filter
-        max_gap (int, optional): Maximum gap between events
-        indexLabel (str): Prefix for first date column
-        lastLabel (str): Prefix for last date column
-    
+        max_gap (int, optional): Maximum gap in days between events to consider
+            as same therapy course. If None, no therapy segmentation. Default 370
+            in config.
+        indexLabel (str): Prefix for first date column (e.g., 'index_')
+        lastLabel (str): Prefix for last date column (e.g., 'last_')
+
     Returns:
-        DataFrame: Index table with one row per entity
-    
-    Example:
-        >>> cohort = write_index_table(
-        ...     encounters,
-        ...     index_field=['personid'],
-        ...     retained_fields=['tenant', 'facilityid'],
-        ...     datefieldPrimary=['servicedate'],
-        ...     code='enc'
-        ... )
+        DataFrame: Index table with one row per entity (or per entity per
+        therapy course if max_gap is specified).
+
+    Output columns:
+        - ``{indexLabel}{code}`` — first event date (overall)
+        - ``{lastLabel}{code}`` — last event date (overall)
+        - ``entries_{code}`` — total event count
+        - ``course_of_therapy`` — therapy segment number (if max_gap set)
+        - ``{indexLabel}therapy_{code}`` — first date per therapy (if max_gap set)
+        - ``{lastLabel}therapy_{code}`` — last date per therapy (if max_gap set)
+        - ``encounter_days_for_course`` — distinct event days per therapy (if max_gap set)
+        - ``max_gap`` — longest gap within therapy (if max_gap set)
     """
     # Ensure list format for fields
     if isinstance(index_field, str):
         index_field = [index_field]
     if isinstance(datefieldPrimary, str):
         datefieldPrimary = [datefieldPrimary]
-    
+
     datefieldPrimary_col = datefieldPrimary[0]
-    
+
+    # datefieldStop defaults to datefieldPrimary
+    if datefieldStop is None:
+        datefieldStop = datefieldPrimary_col
+
+    if code is None:
+        code = ""
+
     # Apply date filters
     df = inTable
-    if histStart and histEnd:
-        df = df.filter(F.col(datefieldPrimary_col).between(histStart, histEnd))
-    elif histStart:
+    if histStart:
         df = df.filter(F.col(datefieldPrimary_col) >= histStart)
-    elif histEnd:
+        df = df.filter(F.col(datefieldPrimary_col).isNotNull())
+    if histEnd:
         df = df.filter(F.col(datefieldPrimary_col) <= histEnd)
-    
+        df = df.filter(F.col(datefieldPrimary_col).isNotNull())
+
     # Add unique ID for deterministic ordering
     df = df.withColumn("_unique_id", F.monotonically_increasing_id())
-    
-    # Define window for first/last aggregations
+
+    # Prepare column names
+    indexName = indexLabel + code
+    lastName = lastLabel + code
+
+    # Prepare retained fields (exclude index + date to avoid duplicates)
+    select_cols = list(index_field)
+    if retained_fields:
+        retained_clean = [f for f in retained_fields
+                          if f not in index_field and f in df.columns]
+        select_cols.extend(retained_clean)
+
+    # Calculate distinct encounter days per person
+    distinct_dates = df.select(*index_field, datefieldPrimary_col).distinct()
+    distinct_counts = distinct_dates.groupBy(*index_field).agg(
+        F.countDistinct(datefieldPrimary_col).alias('encounter_days')
+    )
+
+    # Windows
     windowSpec = (
         Window.partitionBy(index_field)
-        .orderBy(datefieldPrimary_col, '_unique_id')
+        .orderBy(F.asc_nulls_last(datefieldPrimary_col),
+                 F.asc_nulls_last(datefieldStop))
         .rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
     )
-    
-    # Window for row number
-    windowSpecRow = (
-        Window.partitionBy(index_field)
-        .orderBy(datefieldPrimary_col, '_unique_id')
+    windowSpecLead = (
+        Window.partitionBy(*index_field)
+        .orderBy(F.desc_nulls_last(datefieldPrimary_col),
+                 F.asc_nulls_last(datefieldStop))
     )
-    
-    # Prepare columns to select
-    select_cols = [*index_field]
-    if retained_fields:
-        retained_clean = [f for f in retained_fields if f not in index_field]
-        select_cols.extend(retained_clean)
-    
-    # Build the index table
-    cohort_index = (
+    windowSpecDistinctDate = (
+        Window.partitionBy(*index_field, datefieldPrimary_col)
+        .orderBy('_unique_id')
+    )
+
+    # Stage 1: Per-person overall dates + gap calculation
+    cohort = (
         df
         .select([*select_cols, datefieldPrimary_col, '_unique_id'])
-        .distinct()
-        .withColumn(indexLabel + code, 
+        .withColumn(datefieldStop,
+                    F.greatest(
+                        F.coalesce(F.col(datefieldStop), F.col(datefieldPrimary_col)),
+                        F.col(datefieldPrimary_col)))
+        .withColumn('_rownum_date', F.row_number().over(windowSpecDistinctDate))
+        .withColumn(indexName,
                     F.first(datefieldPrimary_col, ignorenulls=True).over(windowSpec))
-        .withColumn(lastLabel + code,
-                    F.last(datefieldPrimary_col, ignorenulls=True).over(windowSpec))
+        .withColumn(lastName,
+                    F.last(datefieldStop, ignorenulls=True).over(windowSpec))
         .withColumn('entries_' + code,
                     F.count(index_field[0]).over(windowSpec))
-        .withColumn('_rownum', F.row_number().over(windowSpecRow))
-        .filter(F.col('_rownum') == 1)
-        .select([*select_cols, indexLabel + code, lastLabel + code, 'entries_' + code])
-        .distinct()
+        .filter(F.col('_rownum_date') == 1)
+        .join(F.broadcast(distinct_counts), on=index_field, how='left')
     )
-    
-    return cohort_index
+
+    if max_gap is None:
+        # No therapy segmentation — return one row per person
+        final_cols = [*select_cols, indexName, lastName, 'entries_' + code,
+                      'encounter_days']
+        valid_cols = [c for c in final_cols if c in cohort.columns]
+        windowSpecPerson = (
+            Window.partitionBy(*index_field)
+            .orderBy(F.col(datefieldPrimary_col).asc_nulls_last(), '_unique_id')
+        )
+        return (
+            cohort
+            .withColumn('_rownum', F.row_number().over(windowSpecPerson))
+            .filter(F.col('_rownum') == 1)
+            .select(valid_cols)
+            .distinct()
+        )
+
+    # --- Therapy segmentation (max_gap specified) ---
+
+    indexTherapyName = indexLabel + "therapy_" + code
+    lastTherapyName = lastLabel + "therapy_" + code
+
+    # Calculate gap to next encounter (using descending lead = ascending lag)
+    cohort = (
+        cohort
+        .withColumn('_next_date', F.lag(datefieldPrimary_col).over(windowSpecLead))
+        .withColumn('_days_to_next',
+                    F.datediff(F.col('_next_date'), F.col(datefieldStop)))
+        .withColumn('_last_course_day',
+                    F.when(F.col('_days_to_next') <= max_gap, False)
+                    .when(F.col(datefieldStop) == F.col(lastName), False)
+                    .otherwise(True))
+        .withColumn('course_of_therapy',
+                    F.sum(F.when(F.col('_last_course_day'), 1).otherwise(0))
+                    .over(windowSpecLead))
+    )
+
+    # Stage 2: Per-therapy first/last dates
+    windowSpec_therapy = (
+        Window.partitionBy([*index_field, 'course_of_therapy'])
+        .orderBy(F.asc_nulls_last(datefieldPrimary_col),
+                 F.asc_nulls_last(datefieldStop))
+        .rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+    )
+    windowSpecTherapyRow = (
+        Window.partitionBy(*index_field, 'course_of_therapy')
+        .orderBy(F.col(datefieldPrimary_col).asc_nulls_last(),
+                 F.asc_nulls_last(datefieldStop), '_unique_id')
+    )
+
+    cohort = (
+        cohort
+        .withColumn(indexTherapyName,
+                    F.first(datefieldPrimary_col, ignorenulls=True)
+                    .over(windowSpec_therapy))
+        .withColumn(lastTherapyName,
+                    F.last(datefieldStop, ignorenulls=True)
+                    .over(windowSpec_therapy))
+        .withColumn('_rownum_therapy',
+                    F.row_number().over(windowSpecTherapyRow))
+        .withColumn('max_gap',
+                    F.max(F.when(~F.col('_last_course_day'),
+                                 F.col('_days_to_next')))
+                    .over(windowSpec_therapy))
+        .filter(F.col('_rownum_therapy') == 1)
+    )
+
+    # Stage 3: Encounter days per therapy course
+    therapy_counts = (
+        cohort
+        .groupBy(*index_field, 'course_of_therapy')
+        .agg(F.countDistinct(datefieldPrimary_col)
+             .alias('encounter_days_for_course'))
+    )
+
+    # Final assembly
+    final_cols = [*select_cols, indexName, lastName, 'entries_' + code,
+                  'encounter_days', 'course_of_therapy',
+                  indexTherapyName, lastTherapyName,
+                  'encounter_days_for_course', 'max_gap']
+
+    cohort = (
+        cohort
+        .join(therapy_counts, on=[*index_field, 'course_of_therapy'], how='left')
+    )
+
+    valid_cols = [c for c in final_cols if c in cohort.columns]
+    return (
+        cohort
+        .select(valid_cols)
+        .sort([*index_field, datefieldPrimary_col])
+    )
 
 
 def identify_target_records(entitySource, elementIndex, elementExtract,
