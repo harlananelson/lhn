@@ -295,7 +295,7 @@ class ExtractItem(SharedMethodsMixin):
             howjoin=howjoin
         )
     
-    def entityExtract(self, entitySource, elementIndex=None,
+    def entityExtract(self, elementList, entitySource, elementIndex=None,
                       datefieldSource=None, histStart=None, histStop=None,
                       datefieldElement=None, masterList=None,
                       howjoin='inner', cacheResult=True, broadcast_flag=True,
@@ -303,15 +303,18 @@ class ExtractItem(SharedMethodsMixin):
                       cohort=None, cohortColumns=None,
                       howCohortJoin='inner'):
         """
-        Extract records from a source table using this item as the index.
+        Extract records from a source table using an element list as the index.
 
-        Convenience wrapper around identify_target_records that uses
-        self.df as the index (cohort/element) table.
+        Matches v0.1.0 signature: first arg = element list (small, the keys),
+        second arg = entity source (large, the table to extract from).
+        Result is assigned to self.df.
 
         Parameters:
-            entitySource: Source DataFrame (or object with df attribute)
-            elementIndex (list): Columns for join (default: self.indexFields)
-            datefieldSource (str): Date column in source for filtering
+            elementList: Element/index table (ExtractItem or DataFrame) — the
+                small table of keys used to filter the source.
+            entitySource: Source DataFrame (or object with df attribute) — the
+                large table to extract from.
+            elementIndex (list): Columns for join (default: elementList.indexFields)
             histStart: Start date/offset
             histStop: Stop date/offset
             datefieldElement (str): Date column in self.df for offsets
@@ -330,10 +333,17 @@ class ExtractItem(SharedMethodsMixin):
         Returns:
             DataFrame: Extracted records
         """
+        # Get index fields from the elementList (the keys table)
         if elementIndex is None:
-            elementIndex = getattr(self, 'indexFields', ['personid'])
+            elementIndex = getattr(elementList, 'indexFields',
+                                   getattr(self, 'indexFields', ['personid']))
 
-        # Get the actual DataFrame from entitySource
+        # Get the actual DataFrames
+        if hasattr(elementList, 'df'):
+            element_df = elementList.df
+        else:
+            element_df = elementList
+
         if hasattr(entitySource, 'df'):
             entity_df = entitySource.df
         else:
@@ -364,9 +374,12 @@ class ExtractItem(SharedMethodsMixin):
                 )
             )
 
-        result = self.identify_target_records(
+        # Call identify_target_records with elementList as the extract (index table)
+        from lhn.cohort import identify_target_records
+        result = identify_target_records(
             entitySource=entity_df,
             elementIndex=elementIndex,
+            elementExtract=element_df,
             datefieldSource=datefieldSource,
             histStart=histStart,
             histStop=histStop,
