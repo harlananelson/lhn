@@ -151,7 +151,7 @@ class ExtractItem(SharedMethodsMixin):
                 logger.warning(f"Auto-write failed for {self.location}: {ex}")
     
     def write_index_table(self, inTable, histStart=None, histEnd=None,
-                          indexLabel="index", lastLabel="last",
+                          indexLabel=None, lastLabel=None,
                           filterSimple=True):
         """
         Create an index table identifying first/last records per entity.
@@ -175,6 +175,10 @@ class ExtractItem(SharedMethodsMixin):
         
         histStart = coalesce(histStart, getattr(self, 'histStart', None))
         histEnd = coalesce(histEnd, getattr(self, 'histEnd', None))
+        if indexLabel is None:
+            indexLabel = getattr(self, 'indexLabel', 'index_')
+        if lastLabel is None:
+            lastLabel = getattr(self, 'lastLabel', 'last_')
         
         datefieldStop = unique_non_none(
             getattr(self, 'datefieldStop', None),
