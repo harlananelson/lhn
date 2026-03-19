@@ -686,15 +686,23 @@ class Resources:
         if self.e is not None:
             result['e'] = self.e
 
-        # Include all processed type_key objects (r, rwds, rwdn, dictrwd, etc.)
+        # Include all processed table objects.
+        # For each callFun, type_key holds the TableList (Items with .df) and
+        # property_name holds config objects. In notebooks, users expect both
+        # the long name (dictrwd) and short name (d) to give access to Items
+        # with .df. So we map property_name → the TableList (type_key object),
+        # not the config objects.
         callFuns = self.config.get('callFunProcessDataTables', {})
         for name, callFun in callFuns.items():
             type_key = callFun.get('type_key')
-            if type_key and hasattr(self, type_key) and getattr(self, type_key) is not None:
-                result[type_key] = getattr(self, type_key)
+            type_key_obj = getattr(self, type_key, None) if type_key else None
+            if type_key and type_key_obj is not None:
+                result[type_key] = type_key_obj
+            # Map property_name (e.g., 'd') to the TableList so
+            # d.condition_conditioncode.df works in notebooks
             property_name = callFun.get('property_name')
-            if property_name and hasattr(self, property_name) and getattr(self, property_name) is not None:
-                result[property_name] = getattr(self, property_name)
+            if property_name and property_name != type_key and type_key_obj is not None:
+                result[property_name] = type_key_obj
 
         # Fallback: include r and rwd if callFuns didn't produce them
         if 'r' not in result and self.r is not None:
