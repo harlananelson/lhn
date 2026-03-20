@@ -387,11 +387,7 @@ class SharedMethodsMixin:
             display(Markdown("**{}**".format(display_label)))
 
         pdf = result.limit(obs).toPandas()
-        try:
-            display(pdf.style.hide(axis='index'))
-        except (TypeError, AttributeError):
-            # pandas < 1.4 — hide() doesn't exist or doesn't take axis param
-            display(pdf.style.hide_index())
+        display(pdf)
 
     def plotByTime(self, datefield=None, title=None, grouping=None, **kwargs):
         """
