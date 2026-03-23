@@ -160,7 +160,12 @@ class Resources:
         """
         self.debug = debug
         self.spark = spark
-        self.replace = replace or {}
+        # Default template substitutions — always include today's date
+        from datetime import date
+        default_replace = {'today': str(date.today())}
+        if replace:
+            default_replace.update(replace)
+        self.replace = default_replace
         self.current_dir = Path.cwd()
 
         # Detect or use provided base path
