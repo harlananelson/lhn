@@ -718,11 +718,17 @@ class Resources:
         # Include resource itself for reread_config_files access
         result['resource'] = self
 
+        # Always include commonly used config values
+        for key in ['dataLoc', 'disease', 'schemaTag', 'project']:
+            val = getattr(self, key, None)
+            if val is not None:
+                result[key] = val
+
         # Include schema name strings (RWDSchema, projectSchema, etc.)
         if load_schemas and self.schemas:
             result.update(self.schemas)
 
-        # Include project-level config values
+        # Include additional config values
         if everything:
             for key in ['disease', 'schemaTag', 'project', 'dataLoc',
                         'parquetLoc', 'warehouse']:
