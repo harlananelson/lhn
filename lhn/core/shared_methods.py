@@ -389,6 +389,35 @@ class SharedMethodsMixin:
         pdf = result.limit(obs).toPandas()
         display(pdf)
 
+    def print_pd(self, label=None, sortfield='Subjects', obs=5,
+                 sort_order='desc'):
+        """
+        Display DataFrame as a formatted pandas table.
+
+        Parameters:
+            label (str): Display header. Falls back to self.label.
+            sortfield (str|list): Column(s) to sort by.
+            obs (int): Number of rows to display.
+            sort_order (str): 'desc' or 'asc'.
+        """
+        if self.df is None:
+            print("No DataFrame available")
+            return
+
+        desc = label or getattr(self, 'label', '')
+        if isinstance(sortfield, str):
+            sortfield = [sortfield]
+
+        df = self.df
+        if all(f in df.columns for f in sortfield):
+            sort_expr = [F.desc(f) if sort_order == 'desc' else F.asc(f) for f in sortfield]
+            df = df.sort(*sort_expr)
+
+        pdf = df.limit(obs).toPandas()
+        if desc:
+            display(Markdown(f"**{desc}**"))
+        display(pdf)
+
     def plotByTime(self, datefield=None, title=None, grouping=None, **kwargs):
         """
         Plot record volume over time using lhn.plot.plotByTime.
