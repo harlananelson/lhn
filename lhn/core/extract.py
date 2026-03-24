@@ -499,10 +499,16 @@ class ExtractItem(SharedMethodsMixin):
             field (str): Column in source to match against.
         """
         if hasattr(patterns, 'df'):
-            # ExtractItem with DataFrame — has 'group' and pattern columns
+            # ExtractItem with DataFrame — get pattern column and group column
             list_index = getattr(patterns, 'listIndex', 'codes')
-            rows = patterns.df.select('group', list_index).collect()
-            group_patterns = [(row['group'], row[list_index]) for row in rows]
+            # Group column: check groupName on self (output table), then on patterns, then 'group'
+            group_col = getattr(self, 'groupName',
+                                getattr(patterns, 'groupName', None))
+            if group_col is None:
+                group_col = 'group' if 'group' in patterns.df.columns else list_index
+            cols_to_select = [group_col, list_index] if group_col != list_index else [list_index]
+            rows = patterns.df.select(*cols_to_select).distinct().collect()
+            group_patterns = [(row[group_col], row[list_index]) for row in rows]
         elif isinstance(patterns, dict):
             # dict: group_name -> regex_pattern
             group_patterns = list(patterns.items())
