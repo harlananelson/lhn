@@ -20,6 +20,14 @@ from lhn.cohort.demographics import (
     assign_age_group
 )
 
+from lhn.cohort.case_control import (
+    standardize_columns,
+    compute_distance,
+    match_controls_to_cases,
+    iterative_case_control_match,
+    prepare_case_control
+)
+
 __all__ = [
     'write_index_table',
     'identify_target_records',
@@ -30,5 +38,10 @@ __all__ = [
     'group_races2',
     'group_gender',
     'group_marital_status',
-    'assign_age_group'
+    'assign_age_group',
+    'standardize_columns',
+    'compute_distance',
+    'match_controls_to_cases',
+    'iterative_case_control_match',
+    'prepare_case_control',
 ]
