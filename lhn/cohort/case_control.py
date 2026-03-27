@@ -292,20 +292,29 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
             break
 
         # Match
-        new_matched = match_controls_to_cases(
-            remaining_cases, remaining_controls,
-            match_cols=match_cols,
-            distance_cols=distance_cols,
-            id_col=id_col,
-            case_id_col=case_id_col,
-            controls_per_case=controls_per_case
-        )
+        # Wrap in try/except so a failed iteration doesn't lose previous matches
+        try:
+            new_matched = match_controls_to_cases(
+                remaining_cases, remaining_controls,
+                match_cols=match_cols,
+                distance_cols=distance_cols,
+                id_col=id_col,
+                case_id_col=case_id_col,
+                controls_per_case=controls_per_case
+            )
 
-        new_count = new_matched.count()
-        logger.info(f"Iteration {iteration}: matched {new_count} control assignments")
+            new_count = new_matched.count()
+            logger.info(f"Iteration {iteration}: matched {new_count} control assignments")
 
-        if new_count == 0:
-            logger.warning(f"Iteration {iteration}: no matches found, continuing")
+            if new_count == 0:
+                logger.warning(f"Iteration {iteration}: no matches found, continuing")
+                continue
+
+        except Exception as exc:
+            logger.warning(
+                f"Iteration {iteration}: failed with {type(exc).__name__}: {exc}. "
+                f"Skipping this iteration — previous matches preserved."
+            )
             continue
 
         # Set canonical column order from first non-empty result
@@ -372,17 +381,44 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
         total_cases = all_matched.select(case_id_col).distinct().count()
         total_controls = all_matched.select(id_col).distinct().count()
         total_pairs = all_matched.count()
+
+        # Distribution of controls per case
+        case_counts = all_matched.groupBy(case_id_col).count()
+        fully_matched = case_counts.filter(F.col('count') >= controls_per_case).count()
+        partially_matched = case_counts.filter(F.col('count') < controls_per_case).count()
+
+        unmatched_count = cases.join(
+            all_matched.select(case_id_col).distinct(),
+            on=case_id_col, how='left_anti'
+        ).select(case_id_col).distinct().count()
+
         logger.info(
             f"Matching complete: {total_cases} cases matched to "
             f"{total_controls} controls ({total_pairs} total pairs)"
         )
+        logger.info(
+            f"  Fully matched ({controls_per_case}+ controls): {fully_matched}"
+        )
+        if partially_matched > 0:
+            logger.warning(
+                f"  Partially matched (<{controls_per_case} controls): {partially_matched}"
+            )
+        if unmatched_count > 0:
+            logger.warning(
+                f"  Unmatched (0 controls): {unmatched_count}"
+            )
 
-        unmatched = cases.join(
-            all_matched.select(case_id_col).distinct(),
-            on=case_id_col, how='left_anti'
-        ).select(case_id_col).distinct().count()
-        if unmatched > 0:
-            logger.warning(f"{unmatched} cases could not be matched")
+        # Controls per case distribution
+        count_dist = (
+            case_counts.groupBy('count')
+            .agg(F.count('*').alias('n_cases'))
+            .orderBy('count')
+            .collect()
+        )
+        logger.info("Controls per case distribution:")
+        for row in count_dist:
+            logger.info(f"  {row['count']} controls: {row['n_cases']} cases")
+
     else:
         logger.warning("No matches produced across all iterations")
 
