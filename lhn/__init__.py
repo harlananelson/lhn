@@ -98,6 +98,12 @@ from lhn.features import (
     analyze_clinical_measurements
 )
 
+# Ontology functions (restored from v0.1.0)
+# Import as subpackage — use via lhn.ontology.search_ontologies() etc.
+# Not imported at top level to avoid requiring standard_ontologies database
+# on import. Access via: from lhn.ontology import search_ontologies
+import lhn.ontology
+
 # Logging
 from lhn.header import get_logger, spark
 
