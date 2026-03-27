@@ -5,7 +5,8 @@ from lhn.header import F, spark, datetime, Window, re
 #from .header import spark, pprint, datetime
 
 
-from lhn.spark_utils import database_exists,convert_date_fields
+from spark_config_mapper import database_exists
+from spark_config_mapper.utils.spark_ops import convert_date_fields
 
 from lhn.header import get_logger
 
