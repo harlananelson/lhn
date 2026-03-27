@@ -200,11 +200,14 @@ def match_controls_to_cases(cases, controls, match_cols, distance_cols=None,
     control_fields = [id_col, *match_cols, *control_std_cols]
     joined_fields = [id_col, case_id_col, *match_cols, 'distance']
 
+    # Select and alias columns to strip table-qualified names (PySpark 2.4 issue:
+    # columns from Hive tables retain qualified names like "schema.table.col"
+    # which break bare-name references after joins)
+    controls_clean = controls.select([F.col(c).alias(c) for c in control_fields])
+    cases_clean = cases.select([F.col(c).alias(c) for c in case_fields])
+
     # Join cases to controls on exact match columns
-    joined = (
-        controls.select(control_fields)
-        .join(cases.select(case_fields), on=match_cols, how='inner')
-    )
+    joined = controls_clean.join(cases_clean, on=match_cols, how='inner')
 
     # Compute distance
     joined = compute_distance(joined, case_suffix=case_suffix, columns=distance_cols)
