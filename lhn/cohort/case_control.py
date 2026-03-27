@@ -443,10 +443,12 @@ def prepare_case_control(demo_df, case_ids, exclude_ids=None,
     case_suffix = _derive_case_suffix(id_col, case_id_col)
 
     # Required fields from demographics
+    # Include ALL match_cols (except age_group which is computed), plus id, age, distance cols
     required_demo_cols = [id_col, *[c for c in match_cols if c != age_group_col],
                           age_col, *distance_cols]
     # Deduplicate while preserving order
     required_demo_cols = list(dict.fromkeys(required_demo_cols))
+    logger.info(f"prepare_case_control: required_demo_cols={required_demo_cols}")
     _validate_columns(demo_df, required_demo_cols, "demo_df")
     _validate_columns(case_ids, [id_col], "case_ids")
     _validate_columns(exclude_ids, [id_col], "exclude_ids")
@@ -505,6 +507,8 @@ def prepare_case_control(demo_df, case_ids, exclude_ids=None,
     n_cases = cases.select(case_id_col).distinct().count()
     n_controls = control_pool.select(id_col).distinct().count()
     logger.info(f"Prepared {n_cases} cases and {n_controls} potential controls")
+    logger.info(f"Case columns: {cases.columns}")
+    logger.info(f"Control columns: {control_pool.columns}")
 
     if n_cases == 0:
         logger.warning("No cases found after joining with demographics")
