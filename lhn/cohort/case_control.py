@@ -171,6 +171,16 @@ def match_controls_to_cases(cases, controls, match_cols, distance_cols=None,
     controls_pd = controls.select([F.col(c).alias(c) for c in control_select]).toPandas()
     logger.info(f"Collected {len(controls_pd)} controls")
 
+    # Drop rows with NaN in match columns (NaN strata never match — nan != nan)
+    n_before_cases = len(cases_pd)
+    n_before_ctrls = len(controls_pd)
+    cases_pd = cases_pd.dropna(subset=match_cols)
+    controls_pd = controls_pd.dropna(subset=match_cols)
+    if len(cases_pd) < n_before_cases:
+        logger.warning(f"Dropped {n_before_cases - len(cases_pd)} cases with NaN in match columns")
+    if len(controls_pd) < n_before_ctrls:
+        logger.warning(f"Dropped {n_before_ctrls - len(controls_pd)} controls with NaN in match columns")
+
     # Create stratum key
     cases_pd['_stratum'] = cases_pd[match_cols].apply(lambda r: tuple(r.values), axis=1)
     controls_pd['_stratum'] = controls_pd[match_cols].apply(lambda r: tuple(r.values), axis=1)
