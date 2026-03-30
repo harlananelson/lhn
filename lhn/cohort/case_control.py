@@ -307,14 +307,16 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
                                  controls_per_case=4, **kwargs):
     """Run iterative case-control matching with progressively relaxed criteria.
 
-    Collects to pandas, then matches within each iteration's match columns.
-    Cases that receive fewer than controls_per_case controls carry to the
-    next iteration. Used controls are removed from the pool.
+    Each iteration only assigns the number of controls each case still needs
+    (not a fresh N). Cases with 3 controls from iteration 1 get 1 more from
+    iteration 2, not 4 more.
 
     Parameters:
         cases (DataFrame): Case patients (Spark DataFrame).
         control_pool (DataFrame): Potential controls (Spark DataFrame).
         match_iterations (list[list[str]]): Match column sets, strictest first.
+            Add progressively relaxed criteria. Cases that can't be matched
+            in any iteration remain with however many controls they got.
         distance_cols (list): Columns for distance calculation.
         id_col (str): Control person ID column.
         case_id_col (str): Case person ID column.
@@ -333,16 +335,45 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
     for i, match_cols in enumerate(match_iterations):
         iteration = i + 1
 
-        logger.info(f"Iteration {iteration}: matching on {match_cols}")
+        # Calculate how many controls each remaining case still needs
+        if all_matched_pd is not None:
+            case_counts = all_matched_pd.groupby(case_id_col).size()
+            # Cases that still need controls
+            insufficient = case_counts[case_counts < controls_per_case]
+            # Max additional needed for this round
+            needs = {cid: controls_per_case - cnt for cid, cnt in insufficient.items()}
+            # Also include cases with 0 matches so far
+            all_case_ids = set(
+                remaining_cases.select(case_id_col).toPandas()[case_id_col]
+            )
+            matched_case_ids = set(case_counts.index)
+            for cid in all_case_ids - matched_case_ids:
+                needs[cid] = controls_per_case
+
+            if not needs:
+                logger.info(f"Iteration {iteration}: all cases fully matched")
+                break
+
+            max_needed = max(needs.values())
+            logger.info(
+                f"Iteration {iteration}: {len(needs)} cases need controls "
+                f"(max {max_needed} more), matching on {match_cols}"
+            )
+        else:
+            needs = None  # First iteration — everyone needs controls_per_case
+            logger.info(f"Iteration {iteration}: matching on {match_cols}")
 
         try:
+            # For subsequent iterations, ask for only the max any case needs
+            n_to_request = max(needs.values()) if needs else controls_per_case
+
             new_matched_pd = match_controls_to_cases(
                 remaining_cases, remaining_controls,
                 match_cols=match_cols,
                 distance_cols=distance_cols,
                 id_col=id_col,
                 case_id_col=case_id_col,
-                controls_per_case=controls_per_case
+                controls_per_case=n_to_request
             )
 
             if len(new_matched_pd) == 0:
@@ -354,6 +385,22 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
                 f"Iteration {iteration}: failed with {type(exc).__name__}: {exc}. "
                 f"Skipping — previous matches preserved."
             )
+            continue
+
+        # If we have prior matches, trim new matches to only what each case needs
+        if needs is not None and len(new_matched_pd) > 0:
+            trimmed = []
+            for cid, group in new_matched_pd.groupby(case_id_col):
+                n_needed = needs.get(cid, 0)
+                if n_needed > 0:
+                    # Take only the closest n_needed controls
+                    trimmed.append(group.nsmallest(n_needed, 'distance'))
+            if trimmed:
+                new_matched_pd = pd.concat(trimmed, ignore_index=True)
+            else:
+                new_matched_pd = pd.DataFrame()
+
+        if len(new_matched_pd) == 0:
             continue
 
         # Accumulate matches
@@ -372,23 +419,40 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
         case_counts = all_matched_pd.groupby(case_id_col).size()
         insufficient = case_counts[case_counts < controls_per_case].index.tolist()
 
-        if len(insufficient) == 0:
+        # Also include completely unmatched cases
+        all_case_ids_spark = remaining_cases.select(case_id_col).toPandas()[case_id_col]
+        unmatched = [cid for cid in all_case_ids_spark if cid not in set(case_counts.index)]
+        still_need = insufficient + unmatched
+
+        if len(still_need) == 0:
             logger.info(f"Iteration {iteration}: all cases fully matched")
             break
 
-        # Filter remaining cases to only insufficient ones
+        # Filter remaining cases
         remaining_cases = remaining_cases.filter(
-            F.col(case_id_col).isin(insufficient)
+            F.col(case_id_col).isin(still_need)
         )
 
         logger.info(
-            f"Iteration {iteration}: {len(insufficient)} cases still need "
-            f"more controls"
+            f"Iteration {iteration}: {len(still_need)} cases still need "
+            f"more controls ({len(insufficient)} partial, {len(unmatched)} unmatched)"
         )
 
+    # Final report
     if all_matched_pd is not None:
-        logger.info(f"Final: {all_matched_pd[case_id_col].nunique()} cases matched, "
-                    f"{len(all_matched_pd)} total pairs")
+        n_cases = all_matched_pd[case_id_col].nunique()
+        n_pairs = len(all_matched_pd)
+        cpc = all_matched_pd.groupby(case_id_col).size()
+
+        logger.info("=" * 60)
+        logger.info(f"FINAL MATCHING RESULTS")
+        logger.info(f"Total cases matched:  {n_cases}")
+        logger.info(f"Total pairs:          {n_pairs}")
+        logger.info(f"Avg controls/case:    {n_pairs/n_cases:.2f}")
+        logger.info("Controls per case distribution:")
+        for n, count in cpc.value_counts().sort_index().items():
+            logger.info(f"  {n} controls: {count} cases")
+        logger.info("=" * 60)
     else:
         logger.warning("No matches produced across all iterations")
 
