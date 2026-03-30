@@ -403,6 +403,11 @@ def iterative_case_control_match(cases, control_pool, match_iterations,
         if len(new_matched_pd) == 0:
             continue
 
+        # Tag each match with quality info
+        new_matched_pd['match_iteration'] = iteration
+        new_matched_pd['match_criteria'] = str(match_cols)
+        new_matched_pd['match_quality'] = len(match_cols)  # more criteria = higher quality
+
         # Accumulate matches
         if all_matched_pd is None:
             all_matched_pd = new_matched_pd
