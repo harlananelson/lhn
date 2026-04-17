@@ -49,7 +49,34 @@ def getCodingSystemId(flat_table, inTable, codefield,  index = ['personid'], exp
     return(codingSystemId)
 
 def getCodesAndSystem(flat_table, inTable, codefield, index = ['personid'], explode_fields = [], dateGroupingFields = []):
-    
+    """
+    Extract the code, coding system ID, and display name for a codefield.
+
+    Parallel to :func:`getCodingSystemId` but returns the full code triplet
+    (standard_id, standard_codingSystemId, standard_primaryDisplay) rather
+    than only the coding system ID. Renames the codefield-prefixed columns
+    to their generic ``standard_*`` names and tags each row with ``tableName``
+    and ``codefield`` literals for downstream ontology tabulation.
+
+    Parameters:
+        flat_table (DataFrame): Flattened source table containing
+            ``{codefield}_standard_id``, ``{codefield}_standard_codingSystemId``,
+            and ``{codefield}_standard_primaryDisplay`` columns.
+        inTable (str): Name of the source table (becomes the ``tableName``
+            column value).
+        codefield (str): The field name prefix (e.g. ``"conditioncode"``,
+            ``"labcode"``).
+        index (list, optional): Index fields. Defaults to ``['personid']``.
+        explode_fields (list, optional): Array fields to explode before
+            extraction. Defaults to ``[]``.
+        dateGroupingFields (list, optional): Date fields to retain for
+            downstream grouping. Defaults to ``[]``.
+
+    Returns:
+        DataFrame: Rows of ``tableName, codefield, standard_id,
+        standard_codingSystemId, standard_primaryDisplay, codeCount``
+        plus any ``dateGroupingFields``.
+    """
     selectFields = ['tableName', 'codefield', 'standard_id', 'standard_codingSystemId'
                     , 'standard_primaryDisplay', 'codeCount', *dateGroupingFields]
     codes_and_system = (  
@@ -573,6 +600,28 @@ def context_name_system_ont(name_regex, system_regex, context_regex, code_regex,
     return(result)
 
 def codingSystem_ont(name_regex = '.*', system_regex = '.*', context_regex = '.*', code_regex = '.*', systemDesc_regex = '.*'):
+    """
+    Search the Discern standard ontologies catalog with regex filters.
+
+    Queries ``standard_ontologies.ontologies`` and returns a summary of
+    matching (contextId, codingSystemId) pairs with concept counts. All
+    regex arguments are applied case-insensitively.
+
+    Parameters:
+        name_regex (str): Regex matched against ``conceptName``. Defaults
+            to ``'.*'`` (all).
+        system_regex (str): Regex matched against ``codingSystemId``.
+        context_regex (str): Regex matched against ``contextDescription``.
+        code_regex (str): Regex matched against ``conceptCode``.
+        systemDesc_regex (str): Regex matched against
+            ``codingSystemDescription``. Case-sensitive due to a typo in
+            the inline pattern (``(?)`` instead of ``(?i)``).
+
+    Returns:
+        DataFrame: ``contextId, contextDescription, contextVersion,
+        codingSystemId, codingSystemDescription, conceptCount`` sorted
+        by ``conceptCount`` descending.
+    """
     result_codingSystem = (spark.sql(f"""
     WITH G AS (
     SELECT DISTINCT 
@@ -687,8 +736,28 @@ def createMetaOnt(flat_table, outTBL, config_dict = {}):
 
 
 def demoTable(field, inSchema, claim = False):
-    
-    
+    """
+    Load a FirstLastMost demographic lookup table from clinical_research_systems.
+
+    Returns the two-column slice ``(personid, {field})`` from a table named
+    ``clinical_research_systems.{inSchema}[_CLAIM]_{field}_FirstLastMost``.
+    These "FirstLastMost" tables are precomputed by the Discern pipeline to
+    pick one demographic value per person (first/last/most-frequent) for
+    join-friendly use downstream.
+
+    Parameters:
+        field (str): Demographic field name, e.g. ``'gender'``, ``'race'``,
+            ``'ethnicity'``. Used as both the table-name suffix and the
+            selected column.
+        inSchema (str): Schema prefix for the FirstLastMost table name
+            (e.g. a dataset slug).
+        claim (bool, optional): If True, inject ``'CLAIM_'`` into the table
+            name (``{inSchema}_CLAIM_{field}_FirstLastMost``). Defaults to
+            False.
+
+    Returns:
+        DataFrame: Two columns — ``personid`` and the requested ``field``.
+    """
     if claim:
         claim = f"CLAIM_"
     else: claim = ""
@@ -703,7 +772,29 @@ def demoTable(field, inSchema, claim = False):
     return(df)
 
 def extractConcepts(concept, description, tabulated_ontologies = ''):
-    
+    """
+    Resolve a Discern concept to its canonical concept-code list per contextVersion.
+
+    For a given ``conceptName``, reads
+    ``{tabulated_ontologies}.conceptCodeConceptDesc``, groups codes by
+    ``contextVersion``, deduplicates codes with identical code-lists
+    (keeping the first via ``row_number == 1``), and joins against the
+    ``description`` DataFrame to attach human-readable ``codingSystem``
+    labels.
+
+    Parameters:
+        concept (str): Concept name to filter on (e.g. a single
+            ``conceptName`` value like ``'SICKLE_CELL_ANEMIA_CLIN'``).
+        description (DataFrame): A codingSystem description table with
+            columns ``descriptionNumber`` and ``codingSystem``, joined
+            onto the resolved concept codes.
+        tabulated_ontologies (str): Fully qualified schema name containing
+            ``conceptCodeConceptDesc`` (e.g. ``'tabulated_ontologies'``).
+
+    Returns:
+        DataFrame: Distinct ``contextVersion, conceptName, conceptCode,
+        codingSystem`` rows sorted by all four columns.
+    """
     w1 = Window.partitionBy('contextVersion', 'conceptName').orderBy('conceptCode')
     w2 = Window.partitionBy('contextVersion', 'conceptName').orderBy('conceptCode')
 
@@ -737,7 +828,27 @@ def extractConcepts(concept, description, tabulated_ontologies = ''):
     return(uniqueConcepts)
 
 def calContextGroups(concept, tabulated_ontologies = ''):
-    
+    """
+    Group equivalent contextVersions for a concept by shared code lists.
+
+    Two contextVersions that resolve a concept to the same set of codes
+    are functionally identical for extraction purposes. This function
+    collapses them into ``contextGroup`` buckets so downstream code can
+    pick one representative ``referenceContext`` per group instead of
+    re-querying every version.
+
+    Parameters:
+        concept (str): ``conceptName`` to analyse.
+        tabulated_ontologies (str): Fully qualified schema name holding
+            ``conceptCodeConceptDesc``.
+
+    Returns:
+        pandas.DataFrame: Columns ``contextVersion, conceptName,
+        contextGroup, referenceContext`` (where ``referenceContext == 1``
+        marks the canonical version per group). Converted via
+        ``.toPandas()`` because the result is small and used as a lookup
+        in driver-side logic.
+    """
     w1 = Window.partitionBy('contextVersion', 'conceptName').orderBy('conceptCode')
     w2 = Window.partitionBy('contextVersion', 'conceptName').orderBy('conceptCode')
     w3 = Window.partitionBy('conceptName').orderBy('contextVersion')
@@ -898,6 +1009,29 @@ def findCrosswalk(tableCodingSystem, ontCodingSystem):
 def check_sample_and_ontology(inTable, table_sample, datefield
                               , ontology = 'tabulated_ontologies.context_concept_table_code'
                              , tabulated_ontologies = ''):
+    """
+    Print a sample summary and return top ontology coverage for a table.
+
+    Two-step diagnostic: (1) prints obs/person counts and date range for
+    ``table_sample`` as a sanity check, (2) if the ontology coverage
+    table exists, returns the top 40 (contextId, conceptName, code) rows
+    by coverage percent for the given ``inTable``.
+
+    Parameters:
+        inTable (str): Name of the source table to filter ontology rows by.
+        table_sample (str): Fully qualified table path to sample counts
+            from (e.g. ``'dataset.encounterSource_sample'``).
+        datefield (str): Date column in ``table_sample`` used for min/max
+            reporting.
+        ontology (str, optional): Name of the coverage ontology table.
+            Defaults to ``'tabulated_ontologies.context_concept_table_code'``.
+        tabulated_ontologies (str): Fully qualified schema name holding
+            the ontology table.
+
+    Returns:
+        pandas.DataFrame | None: Top 40 coverage rows, or None if the
+        ontology table does not exist.
+    """
     r = (spark.sql(f"""
                 SELECT count(*) as `Obs Count`
                 ,count(DISTINCT PersonId) as `Person Count`
@@ -923,6 +1057,23 @@ def check_sample_and_ontology(inTable, table_sample, datefield
         return(r)
     
 def select_top_contextId(DF):
+    """
+    Restrict DF to the single most-populated contextId.
+
+    The Discern ontology API only accepts one ``contextId`` at a time, so
+    when multiple contexts cover a concept, we pick the one with the most
+    distinct ``(conceptName, contextId)`` rows and filter the DataFrame
+    to that context. Used upstream of ``get_ontology_codes``.
+
+    Parameters:
+        DF (DataFrame): Spark DataFrame with at least the columns
+            ``conceptName`` and ``contextId``.
+
+    Returns:
+        pandas.DataFrame: The subset of ``DF`` restricted to the single
+        most-populated ``contextId``, materialised via ``.toPandas()``
+        (expected to be small).
+    """
     result = (
         DF
         .select(['conceptName', 'contextId'])
@@ -979,6 +1130,28 @@ def get_ontology_codes(ontology, name_regex, inTable, code
     return(result)
 
 def add_concept_indicators(conceptName, code, tag = ""):
+    """
+    Return a closure that adds boolean indicator columns for each concept.
+
+    For each name in ``conceptName``, the returned transform appends a new
+    boolean column to its input DataFrame, set to ``True`` when the row's
+    ``code`` value matches the concept under Discern's ``has_concept()``
+    UDF and ``False`` otherwise.
+
+    Parameters:
+        conceptName (list[str]): Concept names to evaluate (e.g.
+            ``['SICKLE_CELL_ANEMIA_CLIN', 'THALASSEMIA_CLIN']``). Each
+            name becomes the name of a new column on the output DataFrame.
+        code (str): Name of the column on the input DataFrame that holds
+            the coded value to test (unquoted — it is substituted into the
+            SQL ``has_concept()`` call verbatim).
+        tag (str, optional): Currently unused; reserved for prefixing new
+            column names. Defaults to ``""``.
+
+    Returns:
+        Callable[[DataFrame], DataFrame]: A transform that applies all
+        concept indicators in one pass when called on a Spark DataFrame.
+    """
     def inner(df):
         for concept in conceptName:
             new_name = concept
