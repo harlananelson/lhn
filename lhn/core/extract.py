@@ -111,6 +111,17 @@ class ExtractItem(SharedMethodsMixin):
     
     @df.setter
     def df(self, value):
+        """Set the underlying Spark DataFrame.
+
+        Does NOT call :meth:`_auto_write`; manual assignments to ``self.df``
+        stay in-memory only. Use :meth:`write` explicitly to persist, or call
+        one of the extract methods (``create_extract``, ``entityExtract``,
+        ``write_index_table``, ``dict2pyspark``) which auto-write after
+        setting ``self.df``.
+
+        Parameters:
+            value (pyspark.sql.DataFrame): DataFrame to store on this item.
+        """
         self._df = value
 
     def _auto_write(self):

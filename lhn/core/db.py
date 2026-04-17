@@ -42,10 +42,23 @@ class DB(SharedMethodsMixin):
     
     @property
     def df(self):
+        """The Spark DataFrame currently associated with this DB.
+
+        Returns ``None`` until :meth:`load` or :meth:`query` has been called
+        (or a DataFrame was passed at construction). Use ``db.df`` to access
+        the underlying Spark DataFrame for operations like ``count()``,
+        ``show()``, or further transformations.
+        """
         return self._df
-    
+
     @df.setter
     def df(self, value):
+        """Replace the underlying Spark DataFrame.
+
+        Parameters:
+            value (pyspark.sql.DataFrame): DataFrame to store. No type check
+                is performed; consumers of :attr:`df` assume a Spark DataFrame.
+        """
         self._df = value
     
     def load(self, table_path=None):
