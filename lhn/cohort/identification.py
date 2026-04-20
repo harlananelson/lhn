@@ -81,8 +81,16 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
         df = df.filter(F.col(datefieldPrimary_col) <= histEnd)
         df = df.filter(F.col(datefieldPrimary_col).isNotNull())
 
-    # Add unique ID for deterministic ordering
-    df = df.withColumn("_unique_id", F.monotonically_increasing_id())
+    # Add unique ID for tie-breaking in ordering windows.
+    # monotonically_increasing_id() is NOT stable across re-runs after a
+    # shuffle (the ids depend on partition layout and can change), so
+    # retained_fields that happen to be chosen by an id-tiebreak can
+    # differ across runs. Prefer a stable hash of the natural keys + date
+    # as tiebreak; this gives reproducible choices without dependence on
+    # Spark's physical plan.
+    _tiebreak_inputs = [F.coalesce(F.col(c).cast("string"), F.lit(""))
+                        for c in index_field + [datefieldPrimary_col]]
+    df = df.withColumn("_unique_id", F.sha2(F.concat_ws("|", *_tiebreak_inputs), 256))
 
     # Prepare column names
     indexName = indexLabel + code
