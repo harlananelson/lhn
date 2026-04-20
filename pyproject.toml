@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lhn"
-version = "0.2.0.dev0"
+version = "0.2.1.dev0"
 description = "Healthcare data extraction and analysis workflows for HealthEIntent systems"
 readme = "README.md"
 license = {text = "Proprietary"}
