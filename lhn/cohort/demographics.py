@@ -157,7 +157,7 @@ def pick_preferred_death(demo_source,
     are deprioritized. Test-patient rows are dropped by default.
 
     Parameters:
-        demo_source (DataFrame): Flattened demographics source (e.g. ``r.demographicsSource.df``).
+        demo_source (DataFrame): Flattened demographics source (e.g. ``r.demoSource.df``).
         priority (tuple): Source values in preferred order. Default ('EMR', 'BILLING', 'CLAIM').
         exclude_testpatients (bool): If True (default), drop rows where testpatientflag is True.
         round_to_month_end (bool): If True (default), coerce dateofdeath to month end via ``last_day()``.
