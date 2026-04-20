@@ -614,12 +614,18 @@ class ExtractItem(SharedMethodsMixin):
                            getattr(self, 'merge_column', 'code'))
         self.df = source.join(merge_df, on=join_col, how='inner')
     
-    def dict2pyspark(self, columnname=['codes']):
+    def dict2pyspark(self, columnname='codes'):
         """
         Convert a dictionary attribute to DataFrame.
-        
+
         Parameters:
-            columnname (list): Column names for the values
+            columnname (str): Name for the values column (default: 'codes').
+                Historically the default was a list ['codes'], which
+                propagated a list-of-a-list to pandas from_dict and
+                produced MultiIndex columns with tuple names -- the
+                resulting Spark DataFrame then had column names like
+                ('codes',) which broke all downstream .select() calls.
+                Passing a plain string avoids the MultiIndex promotion.
         """
         if hasattr(self, 'dictionary'):
             from spark_config_mapper.utils.pandas import dict2Pandas
