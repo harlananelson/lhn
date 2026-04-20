@@ -53,6 +53,23 @@ class Extract:
     def __len__(self):
         return len(self.properties())
 
+    def __getitem__(self, name):
+        """Access an ExtractItem by name.
+
+        Handles config-derived names that are not valid Python identifiers
+        (hyphens, leading digits, etc.) which ``getattr`` can't see.
+        Raises KeyError (not AttributeError) to match dict semantics so
+        callers can ``.get()`` safely.
+        """
+        if name in self.__dict__:
+            return self.__dict__[name]
+        raise KeyError(
+            "Extract has no item '{}' (available: {})".format(
+                name, sorted(self.properties())[:10]))
+
+    def __contains__(self, name):
+        return name in self.__dict__ and not name.startswith('_')
+
     def write_all(self, names=None, skip_empty=True, verbose=True):
         """
         Write extract tables to the project schema in one call.
