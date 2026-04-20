@@ -182,11 +182,14 @@ class ExtractItem(SharedMethodsMixin):
         if (self._df is not None
                 and getattr(self, 'location', None)
                 and getattr(self, 'label', None)):
+            import uuid
+            # Unique per-call temp-table name so concurrent callers (and
+            # retries after failed writes) don't collide or leak.
+            temp_name = "{}_tmp_{}".format(self.location, uuid.uuid4().hex[:12])
             try:
                 # Break lineage: write to a temp table first, then overwrite target.
                 # This avoids "Cannot overwrite table being read from" when the new df
                 # was derived from reading the same table (e.g., lazy-loaded then filtered).
-                temp_name = self.location + "_tmp"
                 self._df.write.saveAsTable(temp_name, mode='overwrite')
                 temp_df = spark.table(temp_name)
 
@@ -194,16 +197,17 @@ class ExtractItem(SharedMethodsMixin):
                 writeTable(temp_df, self.location,
                            description=self.label, partitionBy=partition)
 
-                # Clean up temp table
-                try:
-                    spark.sql(f"DROP TABLE IF EXISTS {temp_name}")
-                except Exception:
-                    pass
-
                 self._df = spark.table(self.location)
                 logger.info(f"Auto-wrote {self.location}")
             except Exception as ex:
                 logger.warning(f"Auto-write failed for {self.location}: {ex}")
+            finally:
+                # Always attempt cleanup — including in the failure path, so
+                # a botched auto-write doesn't leak temp tables on Hive.
+                try:
+                    spark.sql(f"DROP TABLE IF EXISTS {temp_name}")
+                except Exception:
+                    pass
     
     def write_index_table(self, inTable, histStart=None, histEnd=None,
                           indexLabel=None, lastLabel=None,
@@ -630,6 +634,18 @@ class ExtractItem(SharedMethodsMixin):
         if hasattr(self, 'dictionary'):
             from spark_config_mapper.utils.pandas import dict2Pandas
             self.pd = dict2Pandas(self.dictionary, columnname=columnname)
+            # Explicitly set the index name before reset_index so the reset
+            # produces a column named 'index'. Without this, pandas sometimes
+            # uses None or another name (e.g. after certain Pandas versions
+            # with from_dict), and the subsequent rename silently no-ops,
+            # leaving the group label column unnamed and breaking
+            # _extract_by_regex's group-column detection.
+            self.pd.index.name = 'index'
             self.pd = self.pd.reset_index().rename(columns={'index': 'group'})
+            if 'group' not in self.pd.columns:
+                raise RuntimeError(
+                    "dict2pyspark: post-rename columns missing 'group' "
+                    "(got {}). Pandas index handling changed?".format(
+                        list(self.pd.columns)))
             self.df = spark.createDataFrame(self.pd)
             self._auto_write()

@@ -107,10 +107,15 @@ def standardize_columns(df, columns, stats=None):
     return df_with_stats, stats
 
 
-def compute_distance(df, case_suffix='Case', columns=None):
+def compute_distance(df, case_suffix='Case', columns=None, seed=0):
     """Compute Euclidean distance between case and control standardized columns.
 
     Uses ``F.coalesce(..., F.lit(0))`` for null safety.
+
+    A small random jitter breaks distance ties. The jitter is seeded so
+    match assignments are reproducible across runs; set ``seed=None`` to
+    disable the jitter, or pass a different integer for a different
+    deterministic realization.
     """
     if columns is None:
         columns = ['encounters', 'followtime']
@@ -124,7 +129,9 @@ def compute_distance(df, case_suffix='Case', columns=None):
         for col in columns
     ]
     sum_expr = reduce(add, terms)
-    return df.withColumn('distance', F.sqrt(sum_expr + (F.rand() * 0.0001)))
+    if seed is None:
+        return df.withColumn('distance', F.sqrt(sum_expr))
+    return df.withColumn('distance', F.sqrt(sum_expr + (F.rand(seed=seed) * 0.0001)))
 
 
 def match_controls_to_cases(cases, controls, match_cols, distance_cols=None,
