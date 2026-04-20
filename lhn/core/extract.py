@@ -49,9 +49,53 @@ class Extract:
     def __iter__(self):
         """Iterate over table names."""
         return iter(self.properties())
-    
+
     def __len__(self):
         return len(self.properties())
+
+    def write_all(self, names=None, skip_empty=True, verbose=True):
+        """
+        Write extract tables to the project schema in one call.
+
+        Replaces the recurring per-notebook pattern::
+
+            for name in ['a', 'b', 'c']:
+                item = getattr(e, name, None)
+                if item is not None and item.df is not None:
+                    item.write()
+
+        Parameters:
+            names (list|None): Subset of table names to write. If None, writes all
+                properties (i.e. every ExtractItem attached to this Extract).
+            skip_empty (bool): If True (default), silently skip items whose ``df`` is
+                None. If False, call ``write()`` anyway and let it raise.
+            verbose (bool): If True (default), print one line per table with row count
+                and destination location.
+
+        Returns:
+            dict: name -> row count written (or None for skipped items).
+        """
+        names = names if names is not None else self.properties()
+        results = {}
+        for name in names:
+            item = getattr(self, name, None)
+            if item is None:
+                if verbose:
+                    print(f"  {name}: SKIPPED (no such extract)")
+                results[name] = None
+                continue
+            if skip_empty and (getattr(item, 'df', None) is None):
+                if verbose:
+                    print(f"  {name}: SKIPPED (no data)")
+                results[name] = None
+                continue
+            item.write()
+            count = item.df.count() if item.df is not None else 0
+            location = getattr(item, 'location', '?')
+            if verbose:
+                print(f"  {name}: {count:,} records -> {location}")
+            results[name] = count
+        return results
 
 
 class ExtractItem(SharedMethodsMixin):
