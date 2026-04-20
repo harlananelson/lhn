@@ -360,6 +360,46 @@ class Resources:
         # Log summary
         self._log_processing_summary()
 
+        # Loud diagnostic when table containers end up None — surfaces silent
+        # config-load failures that would otherwise surface downstream as
+        # "'NoneType' object is not iterable" at `for name in e:`.
+        self._warn_unresolved_containers()
+
+    def _warn_unresolved_containers(self):
+        """Print a visible diagnostic if self.r or self.e ended up None.
+
+        Runs at the end of finish_init(). Uses print() rather than the
+        logger so the message surfaces in notebook cell output even when
+        logging is silenced. Safe to suppress via warn_unresolved=False
+        in a future kwarg if users need a quieter init.
+        """
+        problems = []
+        if self.RWDSchema and self.r is None:
+            problems.append(
+                f"self.r is None -- RWD tables did not load.\n"
+                f"    RWDSchema     = {self.RWDSchema!r}\n"
+                f"    RWDTables     = {len(self.RWDTables)} defined in config\n"
+                f"    database_exists({self.RWDSchema!r}) was likely False, "
+                f"or RWDTables is empty."
+            )
+        if self.projectSchema and self.e is None:
+            problems.append(
+                f"self.e is None -- Extract not initialized.\n"
+                f"    projectSchema = {self.projectSchema!r}\n"
+                f"    projectTables = {len(self.projectTables)} defined in config\n"
+                f"    local_config  = {self.local_config_path}\n"
+                f"    schema_config = {self.schemaTag_config_path}\n"
+                f"    Likely causes: local_config filename wrong, project_path\n"
+                f"    pointing at the wrong project directory, or projectTables\n"
+                f"    missing from the loaded config."
+            )
+        if problems:
+            print("=" * 72)
+            print("!! Resources finish_init completed with unresolved containers:")
+            for p in problems:
+                print("  - " + p.replace("\n", "\n    "))
+            print("=" * 72)
+
     def _processAllDataTables(self, callFunProcessDataTables):
         """
         Process all schemas using callFunProcessDataTables configuration.
