@@ -17,8 +17,7 @@ from lhn.cohort.demographics import (
     group_races2,
     group_gender,
     group_marital_status,
-    assign_age_group,
-    pick_preferred_death
+    assign_age_group
 )
 
 from lhn.cohort.case_control import (
@@ -40,7 +39,6 @@ __all__ = [
     'group_gender',
     'group_marital_status',
     'assign_age_group',
-    'pick_preferred_death',
     'standardize_columns',
     'compute_distance',
     'match_controls_to_cases',
