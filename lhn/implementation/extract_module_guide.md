@@ -38,7 +38,9 @@ The three things to remember:
 
 1. **One ExtractItem per YAML entry.** Adding `myNewTable:` under
    `projectTables:` creates `e.myNewTable` automatically after
-   `Resources(...)` runs.
+   `Resources(...)` runs. `e` itself is the `Extract` (the container /
+   TableList); each `e.<name>` is an `ExtractItem` (one table, has a
+   `.df` property and the extraction methods).
 2. **Four canonical verbs** do the real work: `dict2pyspark`,
    `load_csv_as_df`, `create_extract`, `entityExtract`,
    `write_index_table`. All four **auto-write** to
@@ -47,6 +49,31 @@ The three things to remember:
    *dictionary* schema (`dictrwdSchema` in YAML). They are **not**
    patient-level. Use them as the source for regex scans — never scan
    a patient-level table.
+
+### Vocabulary: `Extract` vs `ExtractItem`
+
+These are different classes and confusing them will derail a
+conversation or a commit message.
+
+| Class | What it is | How you access one |
+|---|---|---|
+| `Extract` | The container (TableList). Holds every ExtractItem the config defines. Has `.write_all()`, `__iter__`, `__getitem__`. | `e = resource.e` |
+| `ExtractItem` | A single configured table. Has `.df`, `.location`, `.label`, `.write()`, and the four verbs (`dict2pyspark`, `load_csv_as_df`, `create_extract`, `entityExtract`, `write_index_table`). | `e.mycodes`, `e.myEncounter`, etc. |
+
+So in
+`e.myEncounter.entityExtract(e.sicklecodesVerified, r.conditionSource.df)`:
+
+- `e.myEncounter` — the receiver. An **ExtractItem** (destination).
+- `e.sicklecodesVerified` — the `elementList` argument. An
+  **ExtractItem** (source of keys).
+- `r.conditionSource.df` — the `entitySource` argument. A plain Spark
+  **DataFrame** (`r.*` members are `Item`s; `.df` is the DataFrame).
+
+`elementList`, `entitySource`, and `inTable` are all duck-typed: any
+object with a `.df` attribute works (so ExtractItem and Item are
+interchangeable), and a raw DataFrame works too. A `dict` or a `list`
+is also accepted for `elementList` by `create_extract` (the dict
+becomes {group: pattern} and the list becomes sequential groups).
 
 ---
 
@@ -131,6 +158,28 @@ you can set on each item are grouped by which verb consumes them.
 | `indexFields` | Usually `['personid']` or `['personid','tenant']`. Consumed as fallback join key if neither the elementList nor the caller pass one. |
 | `datefield` | Primary date column for downstream filtering. |
 | `cohortColumns` | Subset of columns to keep from a `cohort=` argument when used. |
+
+**Arguments passed from the notebook, NOT the YAML:**
+
+`elementList`, `entitySource`, `inTable`, and the receiver's
+`resource`-scoped dependencies are **not** wired up from the YAML by
+the library. You pass them explicitly:
+
+```python
+e.mycodesVerified.create_extract(
+    elementList=e.mycodes,                     # ExtractItem arg
+    elementListSource=d.condition_conditioncode.df,  # DataFrame arg
+    find_method='regex',                       # could come from YAML
+    sourceField='conditioncode_standard_id',   # could come from YAML
+)
+```
+
+The `inputs: {elementList: mycodes, elementListSource: "dictrwd.condition_conditioncode"}`
+blocks you'll see in existing project YAML files are **documentation
+only** — they tell a human reviewer what the extract conceptually
+depends on, but no library code auto-wires them into the call.
+Treating them as runtime configuration has caused confusion before:
+editing the `inputs:` block does not change what the notebook does.
 
 **`write_index_table` (one row per person, first/last dates):**
 
