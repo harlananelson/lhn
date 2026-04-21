@@ -117,7 +117,7 @@ class Resources:
     Resources manages the three-tier configuration hierarchy:
     1. Global config (config-global.yaml) - Organization-wide settings
     2. Schema config (config-RWD.yaml) - Data source specific settings  
-    3. Project config (000-config.yaml) - Project specific settings
+    3. Project config (000-control.yaml) - Project specific settings
     
     After initialization, data tables are accessible as attributes:
         r = Resources(...)
@@ -132,7 +132,7 @@ class Resources:
     
     Example:
         >>> r = Resources(
-        ...     local_config='000-config.yaml',
+        ...     local_config='000-control.yaml',
         ...     global_config='/shared/config-global.yaml',
         ...     schemaTag_config='/shared/config-RWD.yaml',
         ...     replace={'today': '2025-01-19'}
@@ -149,7 +149,7 @@ class Resources:
         Initialize Resources with configuration files.
 
         Parameters:
-            local_config (str): Path to project config (000-config.yaml)
+            local_config (str): Path to project config (000-control.yaml)
             global_config (str): Path to global config (config-global.yaml)
             schemaTag_config (str): Path to schema config (config-RWD.yaml)
             replace (dict): Template substitutions (e.g., {'today': '2025-01-19'})

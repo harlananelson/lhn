@@ -31,7 +31,7 @@
 | `entityExtract` | Method | Step 2: Extract patient records matching identified codes. 1st positional arg is `elementList`, 2nd is `entitySource` | `e.encounters.entityExtract(e.codes, r.source.df)` |
 | `write_index_table` | Method | Step 3: Create patient-level summary with first/last dates | `e.index.write_index_table(inTable=e.encounters)` |
 | `attrition` | Method | Display record and patient counts with date ranges | `item.attrition()` |
-| `tabulate` | Method | Aggregate + display counts by column. Actual signature: `tabulate(group_cols=None, count_distinct=None, order_by='count', limit=50, dropna=False, show=False)` | `item.tabulate(group_cols=['IcdPheno'], show=True)` |
+| `tabulate` | Method | Aggregate + display counts by column. Signature: `tabulate(group_cols=None, count_distinct=None, order_by='count', limit=50, dropna=False, show=False)`. Returns a Spark DataFrame (not pandas). | `item.tabulate(group_cols=['conditioncode_standard_primaryDisplay'], count_distinct='personid', show=True)` |
 | `cohort` | Concept | Set of patients meeting study criteria | Identified by personid + tenant |
 | `index_date` | Concept | First occurrence date for a patient | `index_COND` = first condition date |
 | `last_date` | Concept | Last occurrence date for a patient | `last_COND` = last condition date |
@@ -260,6 +260,59 @@ e.condition_encounters.entityExtract(
 **Output**: DataFrame with patient records stored in
 `e.condition_encounters.df`, auto-written to
 `<projectSchema>.condition_encounters`.
+
+**Filtering to a cohort (`cohort=`).** `entityExtract` accepts an
+optional `cohort=` argument (restored from v0.1.0) that performs an
+inner-join against the cohort before the code join. Pass an
+ExtractItem or raw DataFrame:
+
+```python
+# Pull only records for patients in e.persontenant.
+e.condition_encounters.entityExtract(
+    e.condition_codes,                 # elementList
+    r.conditionSource.df,              # entitySource
+    cohort=e.persontenant,             # restrict to cohort persons
+    cohortColumns=['personid', 'tenant'],   # optional; defaults to all
+    howCohortJoin='inner',                  # or 'left_semi' for dedup-safe
+)
+```
+
+When `cohort=` is provided, the join key comes from
+`cohort.indexFields`. If that item's `indexFields` is only
+`['personid']` but the underlying data has multi-tenant persons,
+the join produces one row per person-tenant pair, which can multiply
+downstream rows. Prefer `['personid', 'tenant']` for multi-tenant
+pipelines.
+
+### 5.3.1 `retained_fields` auto-keep rule
+
+Both `create_extract` and `write_index_table` have a
+`retained_fields` config key. The actual output always keeps:
+
+- everything in `indexFields`
+- everything in `retained_fields`
+- the `'group'` column if it's present in the input DataFrame
+
+So `retained_fields: [code, name]` with
+`indexFields: [personid, tenant]` produces output columns
+`[personid, tenant, code, name, group]` — the `personid`/`tenant`
+are added automatically. Don't repeat them in `retained_fields`
+(no effect, just noise).
+
+### 5.3.2 When does an extract auto-write to Hive?
+
+Three write paths coexist in lhn. Pick the right one.
+
+| Path | Triggers auto-write? | When to use |
+|---|---|---|
+| `e.foo.dict2pyspark()` / `load_csv_as_df()` / `create_extract(...)` / `entityExtract(...)` / `write_index_table(...)` | **Yes** — each verb ends with `_auto_write()`, which writes `self.df` to `{location}_tmp_{uuid}` then atomically overwrites `self.location`. | Normal case. Don't call `.write()` after — redundant. |
+| `e.foo.df = some_df` (manual assignment) | **No** — the `df` setter only updates `self._df` and `self.status`. Nothing is persisted. | You've computed `some_df` outside a verb (e.g., a bespoke join). Follow with `e.foo.write()`. |
+| `e.foo.load_csv_as_df()` | Writes via `self.df.write.saveAsTable(...)` — different code path than `_auto_write`, skips `description=` and `partitionBy=` metadata | Use when you just want the CSV on Hive; if partitioning matters, load then re-`.write()`. |
+| `e.foo.write()` or `e.write_all(names=[...])` | Explicit write. Goes through `writeTable` with full metadata. Works regardless of how `.df` got set. | Belt-and-suspenders end-of-notebook persistence; use in Cell 43-style `write_all` blocks. |
+
+Manual `df = ...` assignment followed by implicit "`.df` must have
+been written by now" is a common foot-gun — it does not trigger
+auto-write. When in doubt, explicitly call `.write()`.
 
 ### 5.4 Step 3: write_index_table
 
@@ -493,7 +546,10 @@ count_people(
 
 ### 10.1 How Resources Works
 
-`Resources` reads `callFunProcessDataTables` from config-global.yaml and automatically creates TableList/DB objects:
+`Resources` reads `callFunProcessDataTables` from config-global.yaml.
+Each rule creates two Resources attributes: `type_key` binds a
+`TableList[Item]` (with `.df`-bearing members); `property_name` binds
+a dict of `ConfigObj` (the config metadata, no `.df`).
 
 ```yaml
 # config-global.yaml
@@ -501,9 +557,20 @@ callFunProcessDataTables:
   RWDcallFunc:
     data_type: 'RWDTables'       # Table definitions (in config-RWD.yaml)
     schema_type: 'RWDSchema'     # Schema key (in 000-control.yaml)
-    type_key: 'rwd'              # → resource.rwd (TableList)
-    property_name: 'r'           # → resource.r (DB)
+    type_key: 'r'                # → resource.r (TableList[Item])
+    property_name: 'rwd'         # → resource.rwd (dict of ConfigObj)
+  dictrwdcallFunc:
+    data_type: null              # auto-discovered from schema
+    schema_type: 'dictrwdSchema'
+    type_key: 'dictrwd'          # → resource.dictrwd (TableList[Item])
+    property_name: 'd'           # → resource.d (dict of ConfigObj)
+    updateDict: true
 ```
+
+**Rule:** put the TableList name on `type_key`. `property_name` is
+for the config-object variant, and `load_into_local()` rebinds it
+onto the TableList in the caller's locals namespace so `d.<table>.df`
+works in notebook cells.
 
 ### 10.2 Standard Initialization
 
@@ -551,20 +618,30 @@ resource = Resources(
 # schemaTag, dataLoc, parquetLoc) in addition to the objects.
 locals().update(resource.load_into_local())
 
-# Now available directly: e, r, db, etc.
+# After this, the local namespace has:
+#   r, dictrwd       - TableList[Item]s bound by type_key
+#   rwd, d           - the property_name dicts (d remapped onto dictrwd)
+#   e                - Extract(resource.proj)
+#   RWDSchema, projectSchema, dataLoc, ... - schema names and paths
 e.cohort.showIU(obs=10)
-r.conditionSource.count()
+r.conditionSource.df.count()
+d.condition_conditioncode.df.count()
 ```
 
 ### 10.4 Objects Created
 
-| Object | Type | Created By | Access |
-|--------|------|------------|--------|
-| `resource.rwd` | TableList | RWDcallFunc rule | `resource.rwd.conditionSource.df` |
-| `resource.r` | DB | RWDcallFunc rule | `r.conditionSource` (DataFrame) |
-| `resource.proj` | TableList | projectcallFunc rule | `resource.proj.cohort.df` |
-| `resource.db` | DB | projectcallFunc rule | `db.cohort` (DataFrame) |
-| `e` | Extract | `Extract(resource.proj)` | `e.cohort.showIU()` |
+| Object | Type | Created By | Access example |
+|--------|------|------------|----------------|
+| `resource.r` | `TableList[Item]` | `RWDcallFunc.type_key='r'` | `r.conditionSource.df.filter(...)` |
+| `resource.rwd` | dict of `ConfigObj` | `RWDcallFunc.property_name='rwd'` | rarely used directly — config metadata |
+| `resource.dictrwd` | `TableList[Item]` | `dictrwdcallFunc.type_key='dictrwd'` | `dictrwd.condition_conditioncode.df` |
+| `resource.d` | dict of `ConfigObj` | `dictrwdcallFunc.property_name='d'` | only usable as `d.<table>.df` AFTER `load_into_local()` rebinds onto dictrwd |
+| `resource.proj` | dict of `ConfigObj` | projectTables entries | internal — drives `self.e` construction |
+| `resource.e` | `Extract` | `Extract(resource.proj)` in `finish_init` | `e.cohort.showIU()` |
+
+There is no `resource.db`. `DB` (from `spark_config_mapper/core/db.py`)
+is a separate single-table wrapper that notebook code rarely uses
+directly.
 
 ---
 
@@ -662,6 +739,53 @@ load step and the table processing step:
 validate_tables_config(cfg['RWDTables'], strict=True)   # typo catcher
 r = processDataTables(cfg['RWDTables'], strict=True, ...)
 ```
+
+**Setter preservation.** The `Item.df` setter intentionally does NOT
+clobber `ITEM_FAILED`:
+
+```python
+# (simplified from spark_config_mapper/schema/mapper.py)
+@df.setter
+def df(self, value):
+    self._df = value
+    if value is not None and self.status not in (ITEM_PROCESSED, ITEM_FAILED):
+        self.status = ITEM_LOADED
+```
+
+So once an Item is `ITEM_FAILED`, manually assigning `item.df = ...`
+does not reset it — you have to explicitly set `item.status = 'LOADED'`
+first if you intend to recover.
+
+**Getter raises.** After a prior load failure, `item.df` raises
+`ItemLoadError` — `_df` stays `None` and the status stays `ITEM_FAILED`
+so the defensive pattern `if item.df is not None:` does NOT work. Use
+`try/except ItemLoadError` or check `item.status` before accessing
+`.df`:
+
+```python
+if item.status == 'FAILED':
+    # inspect item.load_error / item.process_error
+    ...
+else:
+    df = item.df            # safe
+```
+
+**`processDataTables` returns `None` on missing schema.** If the
+configured `RWDSchema` doesn't exist in the Spark metastore,
+`processDataTables(...)` returns `None` — it does not raise. The
+caller typically assigns `r = processDataTables(...)` and then hits
+`AttributeError: 'NoneType' object has no attribute '...'` three
+frames later. Guard:
+
+```python
+r = processDataTables(cfg['RWDTables'], schema=RWDSchema, ...)
+if r is None:
+    raise RuntimeError(f"Schema '{RWDSchema}' not found in metastore.")
+```
+
+**`processDataTables(strict=True)`** collects per-item errors and
+raises `ItemProcessError` with all of them when the loop finishes.
+Default is `strict=False` (lenient — warnings only).
 
 ### 12.2 What `Item.process()` actually interprets
 
