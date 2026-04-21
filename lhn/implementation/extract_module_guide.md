@@ -75,6 +75,79 @@ interchangeable), and a raw DataFrame works too. A `dict` or a `list`
 is also accepted for `elementList` by `create_extract` (the dict
 becomes {group: pattern} and the list becomes sequential groups).
 
+### Inspecting an ExtractItem's parameters
+
+Every ExtractItem / Item carries its YAML-sourced parameters as
+plain attributes. Two helpers, inherited from `SharedMethodsMixin`,
+surface them:
+
+```python
+>>> e.sicklecodesVerified.properties()
+{'name': 'sicklecodesVerified',
+ 'label': 'Verified Sickle Cell Codes',
+ 'location': 'sicklecell_ai.sicklecodesVerified',
+ 'groupName': 'group',
+ 'sourceField': 'conditioncode_standard_id',
+ 'indexFields': ['conditioncode_standard_primaryDisplay',
+                 'conditioncode_standard_id',
+                 'conditioncode_standard_codingSystemId'],
+ 'datefield': None,
+ ...}
+
+>>> e.sicklecodesVerified.values()    # same info, pretty-printed
+```
+
+- `.properties()` returns a dict (filters out `_private` attrs and `df`).
+- `.values()` `pprint`s `self.__dict__` (includes everything).
+
+These are the first thing to reach for when debugging "why is this
+join picking the wrong key" or "why isn't the group column being
+found" — both of which are driven by attributes on the receiver
+*and* on the elementList.
+
+### Parameters an ExtractItem brings into verb calls
+
+Because `elementList` is usually an ExtractItem, **its config
+attributes are consumed by the verb** — not just the caller's own
+config. This is where a lot of subtle coupling hides. Concretely:
+
+**`create_extract` (regex mode) reads from `elementList`:**
+
+| Attribute (on elementList) | Consumed as |
+|---|---|
+| `listIndex` | The column name in `elementList.df` that contains the regex patterns. Defaults to `'codes'`. |
+| `groupName` | The column in `elementList.df` that labels which regex matched. Falls back to the receiver's `groupName`, then to literal `'group'`, then to `listIndex`. |
+
+**`create_extract` (merge mode) reads from `self` (the receiver):**
+
+| Attribute (on the receiver, NOT elementList) | Consumed as |
+|---|---|
+| `self.listIndex` (with fallback `self.merge_column`, then `'code'`) | Join column between `elementList.df` and `elementListSource`. |
+
+Note the asymmetry: regex mode reads the elementList's `listIndex`;
+merge mode reads the receiver's `listIndex`. Keep the same value on
+both when possible, or pass `elementIndex=` explicitly.
+
+**`entityExtract` reads from `elementList`:**
+
+| Attribute (on elementList) | Consumed as |
+|---|---|
+| `indexFields` | Default `elementIndex` (join key). Falls back to the receiver's `indexFields`, then to `['personid']`. |
+
+This is why a verified-codes ExtractItem that has
+`indexFields: [conditioncode_standard_primaryDisplay,
+conditioncode_standard_id, conditioncode_standard_codingSystemId]` in
+YAML causes `entityExtract` to join on those three columns by
+default — the receiver didn't say anything about the join, the
+**elementList** did, silently.
+
+**Practical rule:** when you wire up a create_extract → entityExtract
+chain, the YAML parameters on the intermediate `*_Verified` item
+(`listIndex`, `groupName`, `indexFields`) determine both how
+`create_extract` labels its output and how `entityExtract`'s
+downstream join keys are picked. Check `e.thatItem.properties()` if
+you're not sure what the verb is going to see.
+
 ---
 
 ## 2. Configuration reference
