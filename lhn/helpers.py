@@ -38,7 +38,9 @@ def print_pd(df, label='', sortfield='Subjects', obs=5, sort_order='desc',
         df: Spark DataFrame or pandas DataFrame
         label (str): Bold header displayed above the table
         sortfield (str or list): Column(s) to sort by
-        obs (int): Number of rows to display
+        obs (int): Number of rows to display. All `obs` rows are rendered
+            in full (no pandas first-5/last-5 summary truncation); raise
+            `obs` to verify an entire code list.
         sort_order (str): 'desc' or 'asc'
         hide_index (bool): Whether to hide the row index
     """
@@ -65,7 +67,15 @@ def print_pd(df, label='', sortfield='Subjects', obs=5, sort_order='desc',
     df_styled = df.style
     if hide_index:
         df_styled = df_styled.hide(axis='index')
-    display(df_styled)
+    # Override pandas' default display.max_rows (60) and the Styler's
+    # render.max_rows so that when the caller passes a large obs to
+    # verify an entire code list, every row renders instead of the
+    # first-5/last-5 summary view.
+    with pd.option_context(
+        'display.max_rows', obs,
+        'styler.render.max_rows', obs,
+    ):
+        display(df_styled)
 
 
 def showIU(df, obs=6, index=None, tenant=127, sortfield=None,

@@ -397,7 +397,9 @@ class SharedMethodsMixin:
         Parameters:
             label (str): Display header. Falls back to self.label.
             sortfield (str|list): Column(s) to sort by.
-            obs (int): Number of rows to display.
+            obs (int): Number of rows to display. All `obs` rows are
+                rendered in full (no pandas first-5/last-5 summary
+                truncation); raise `obs` to verify an entire code list.
             sort_order (str): 'desc' or 'asc'.
         """
         if self.df is None:
@@ -416,7 +418,11 @@ class SharedMethodsMixin:
         pdf = df.limit(obs).toPandas()
         if desc:
             display(Markdown(f"**{desc}**"))
-        display(pdf)
+        # Override pandas' default display.max_rows (60) so that when the
+        # caller passes a large obs to verify an entire code list, every
+        # row renders instead of the first-5/last-5 summary view.
+        with pd.option_context('display.max_rows', obs):
+            display(pdf)
 
     def plotByTime(self, datefield=None, title=None, grouping=None, **kwargs):
         """

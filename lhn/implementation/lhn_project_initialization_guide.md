@@ -717,7 +717,10 @@ locals().update(resource.load_into_local())
 # ============================================================================
 
 e.dm2_raw.dict2pyspark()
-e.dm2_raw.print_pd(label='DM2 raw codes')
+# Pass obs >= len(code list) when verifying codes. The point of printing
+# after dict2pyspark is to confirm every YAML entry made it through --
+# the default obs=5 hides a dropped or mistyped code in a long list.
+e.dm2_raw.print_pd(label='DM2 raw codes', obs=500)
 
 # ============================================================================
 # Step 1b: Verify against the dictionary table (d.*, NOT r.*)
