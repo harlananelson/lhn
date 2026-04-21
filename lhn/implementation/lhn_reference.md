@@ -120,19 +120,54 @@ Step 3: write_index_table  → Create patient-level summary
 Identify codes from reference tables using regex or exact matching.
 
 ```python
+# Typical pipeline pattern — raw codes loaded from config dict or CSV,
+# then verified against a dictionary table. The elementList is the
+# *raw* ExtractItem (e.raw_codes); the elementListSource is the
+# *dictionary* DataFrame (d.condition_conditioncode.df).
 e.target_codes.create_extract(
-    elementList=d.condition_codes,           # Reference table Item
-    elementListSource=d.condition_codes.df,  # Reference DataFrame
-    find_method='regex'                      # 'regex' or 'merge'
+    elementList=e.raw_codes,                          # ExtractItem: patterns
+    elementListSource=d.condition_conditioncode.df,   # DataFrame: dictionary
+    find_method='regex',                              # 'regex' or 'merge'
+    sourceField='conditioncode_standard_id',          # column to scan
 )
 ```
 
-**Parameters**:
-- `elementList`: Item containing search patterns
-- `elementListSource`: DataFrame to search within
-- `find_method`: 'regex' for pattern matching, 'merge' for exact join
+**Call-time arguments**:
+- `elementList` — ExtractItem (or dict / list / DataFrame) containing
+  search patterns. Usually `e.<raw_codes>` produced by `dict2pyspark`
+  or `load_csv_as_df`.
+- `elementListSource` — DataFrame to search within. Always a dictionary
+  table (`d.*.df`), never a patient-level source.
+- `find_method` — `'regex'` (scan `sourceField` with patterns) or
+  `'merge'` (exact-value join on `listIndex`). Falls back to
+  `self.find_method`, then defaults to `'regex'`.
+- `sourceField` — column in `elementListSource` to scan / join on.
+  Falls back to `self.sourceField` from YAML.
 
-**Output**: DataFrame with matched codes stored in `e.target_codes.df`
+**Required YAML parameters on the receiver** (`e.target_codes`):
+
+| Key | Required? | Purpose |
+|---|---|---|
+| `label` | Yes (for auto-write) | Description written to Hive. |
+| `sourceField` | Yes if not passed explicitly | Column to scan in `elementListSource`. |
+| `indexFields` | Yes | Columns retained on the verified output; used later as default `elementIndex` by `entityExtract` when this item is an elementList. |
+| `groupName` | No | Column that tags which regex matched. Defaults to `'group'`. |
+| `find_method` | No | `'regex'` (default) or `'merge'`. |
+| `retained_fields` | No | Output columns to project to. `indexFields` + `'group'` are always kept. |
+
+**Required YAML parameters on the elementList** (`e.raw_codes`):
+
+| Key | Required? | Purpose |
+|---|---|---|
+| `label` | Yes (if you want auto-write) | Description. |
+| `listIndex` | Yes (for regex mode) | Column in `elementList.df` that holds the regex patterns. Read by the verb: `getattr(elementList, 'listIndex', 'codes')`. |
+| `dictionary` | If building via `dict2pyspark` | Inline `{group: pattern}` map from YAML. |
+| `csv` | If building via `load_csv_as_df` | Path to a CSV with the codes. |
+| `groupName` | No | Fallback group-column name, used if the receiver doesn't set one. |
+| `sourceField` | No | Conventionally set equal to the receiver's `sourceField` — informational only when passed explicitly in the call. |
+
+**Output**: DataFrame with matched codes stored in `e.target_codes.df`,
+auto-written to `<projectSchema>.target_codes`.
 
 ### 5.3 Step 2: entityExtract
 
@@ -140,20 +175,48 @@ Extract patient records matching identified codes.
 
 ```python
 e.condition_encounters.entityExtract(
-    elementList=e.target_codes,              # From Step 1
-    entitySource=r.conditionSource,          # Source data table
-    cohort=e.persontenant.df,                # Optional: filter to cohort
-    cacheResult=True
+    e.target_codes,                  # ExtractItem: verified codes from Step 1
+    r.conditionSource.df,            # DataFrame: patient-level source table
+    cohort=e.persontenant,           # Optional: filter patients to a cohort
+    cacheResult=True,
 )
 ```
 
-**Parameters**:
-- `elementList`: ExtractItem with identified codes (from Step 1)
-- `entitySource`: Source DataFrame or Item
-- `cohort`: Optional DataFrame to filter patients
-- `cacheResult`: Cache result for repeated access
+**Call-time arguments**:
+- `elementList` (1st positional) — ExtractItem (or object with `.df`)
+  holding the verified codes from Step 1.
+- `entitySource` (2nd positional) — patient-level source DataFrame or
+  Item (e.g., `r.conditionSource`). This is the large table being
+  filtered.
+- `elementIndex` — Join columns. If not passed, falls back to
+  `elementList.indexFields`, then `self.indexFields`, then
+  `['personid']`.
+- `cohort` — Optional ExtractItem/DataFrame to inner-join against
+  before extraction, restricting results to cohort persons.
+- `set_self_df` — If `False`, returns the DataFrame without
+  assigning to `self.df` (and no auto-write). Default `True`.
 
-**Output**: DataFrame with patient records stored in `e.condition_encounters.df`
+**Required YAML parameters on the receiver** (`e.condition_encounters`):
+
+| Key | Required? | Purpose |
+|---|---|---|
+| `label` | Yes (for auto-write) | Description. |
+| `indexFields` | Yes | Default join key fallback (used if `elementIndex` isn't passed AND the elementList has no `indexFields`). |
+| `datefield` | Usually | Date column for downstream filtering / windowing. |
+| `fields` | No | Informational; you'll typically project downstream with `.select(...)`. |
+| `retained_fields` | No | If set and the receiver is chained into another verb. |
+| `partitionBy` | No | Hive partition column. |
+
+**Required YAML parameters on the elementList** (`e.target_codes`):
+
+| Key | Consumed as | Effect |
+|---|---|---|
+| `indexFields` | Default `elementIndex` (join key) | **This is the big one.** If `e.target_codes.indexFields = ['conditioncode_standard_primaryDisplay', 'conditioncode_standard_id', 'conditioncode_standard_codingSystemId']`, the `entityExtract` join happens on those three columns — even though the receiver never mentioned them. Check `e.target_codes.properties()` if a join is producing unexpected rows. |
+| `label` | (not consumed by entityExtract; already set earlier for auto-write) | — |
+
+**Output**: DataFrame with patient records stored in
+`e.condition_encounters.df`, auto-written to
+`<projectSchema>.condition_encounters`.
 
 ### 5.4 Step 3: write_index_table
 
