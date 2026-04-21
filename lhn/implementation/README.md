@@ -120,18 +120,28 @@ resource = Resources(
     # finish_init=True                             # default; skips only if False
 )
 
-# Resources auto-creates based on callFunProcessDataTables rules:
-#   resource.rwd   → TableList from RWDTables + RWDSchema
-#   resource.r     → DB wrapper for rwd
-#   resource.proj  → TableList from projectTables + projectSchema
-#   resource.db    → DB wrapper for proj
+# Resources auto-creates based on callFunProcessDataTables rules.
+# For each rule, `type_key` becomes a TableList[Item], and
+# `property_name` becomes a dict of config-objects (not tables).
+#
+#   resource.r         → TableList[Item] — RWD source tables (.df is DF)
+#   resource.dictrwd   → TableList[Item] — dictionary tables
+#   resource.d         → dict of ConfigObj (NOT tables — use dictrwd)
+#   resource.e         → Extract container — ExtractItems from projectTables
 
-e = resource.e   # auto-created by finish_init (default)  # Wrap project tables in ExtractItem
-r = resource.r              # Source table access
+e = resource.e
+r = resource.r
+d = resource.dictrwd        # dictionary tables — USE AS elementListSource
 
-# Three-step extraction
-e.codes.create_extract(elementList=..., find_method='regex')
-e.encounters.entityExtract(elementList=e.codes, entitySource=r.conditionSource)
+# Three-step extraction (match 053/054/056/057/058/064/067 pattern)
+e.raw_codes.dict2pyspark()                         # build codes from YAML
+e.codes.create_extract(
+    elementList=e.raw_codes,
+    elementListSource=d.condition_conditioncode.df,  # DICTIONARY, not r.*
+    find_method='regex',
+    sourceField='conditioncode_standard_id',
+)
+e.encounters.entityExtract(e.codes, r.conditionSource.df)
 e.index.write_index_table(inTable=e.encounters)
 
 # Verify at each step
@@ -149,15 +159,23 @@ callFunProcessDataTables:
   RWDcallFunc:
     data_type: 'RWDTables'       # Table definitions key (in config-RWD.yaml)
     schema_type: 'RWDSchema'     # Schema key (in 000-control.yaml)
-    type_key: 'rwd'              # → resource.rwd (TableList)
-    property_name: 'r'           # → resource.r (DB wrapper)
+    type_key: 'r'                # → resource.r (TableList[Item])
+    property_name: 'rwd'         # → resource.rwd (dict of ConfigObj)
 
-  projectcallFunc:
-    data_type: 'projectTables'   # Table definitions key (in 000-control.yaml)
-    schema_type: 'projectSchema' # Schema key (in 000-control.yaml)
-    type_key: 'proj'             # → resource.proj (TableList)
-    property_name: 'db'          # → resource.db (DB wrapper)
+  dictrwdcallFunc:
+    data_type: null              # Auto-discovered from schema
+    schema_type: 'dictrwdSchema'
+    type_key: 'dictrwd'          # → resource.dictrwd (TableList[Item])
+    property_name: 'd'           # → resource.d (dict of ConfigObj)
+    updateDict: true             # Auto-discover tables via schema scan
 ```
+
+**Important asymmetry:** `type_key` binds a `TableList[Item]` (with
+`.df`-bearing members); `property_name` binds a dict of `ConfigObj`
+(no `.df`). `load_into_local()` rebinds the `property_name` short
+alias (`d`) onto the `TableList` so `d.<table>.df` works in notebook
+cells. Without that remap, `resource.d.<table>.df` raises
+`AttributeError`.
 
 When `Resources(...)` runs with `finish_init=True` (the default), it:
 1. Reads `callFunProcessDataTables` from config-global.yaml
@@ -232,10 +250,14 @@ locals().update(resource.load_into_local())
 Now you can write clean analysis cells:
 
 ```python
-# Direct access to source tables via r (DB wrapper)
-r.conditionSource.filter(F.col('code').like('E11%')).count()
+# Source-table access via r (TableList[Item]); .df is the DataFrame
+r.conditionSource.df.filter(F.col('code').like('E11%')).count()
 
-# Rich ExtractItem methods via e (Extract wrapper)
+# Dictionary-table access via d (remapped from property_name 'd' onto
+# the TableList resource.dictrwd by load_into_local()):
+d.condition_conditioncode.df.count()
+
+# ExtractItem methods via e (Extract)
 e.cohort.showIU(obs=10)
 e.cohort.attrition()
 e.cohort.location
@@ -245,13 +267,14 @@ e.cohort.location
 
 After `Resources` initialization with typical config:
 
-| Attribute | Type | Source | Access Pattern |
-|-----------|------|--------|----------------|
-| `resource.rwd` | TableList | RWDTables + RWDSchema | `resource.rwd.conditionSource` |
-| `resource.r` | DB | DB wrapper for rwd | `r.conditionSource` (DataFrame directly) |
-| `resource.proj` | TableList | projectTables + projectSchema | `resource.proj.cohort` |
-| `resource.db` | DB | DB wrapper for proj | `db.cohort` (DataFrame directly) |
-| `e` (via load_into_local) | Extract | Extract(resource.proj) | `e.cohort.showIU()` |
+| Attribute | Type | Built from | Access pattern |
+|-----------|------|------------|----------------|
+| `resource.r` | `TableList[Item]` | RWDTables + RWDSchema (type_key='r') | `r.conditionSource.df.count()` |
+| `resource.rwd` | dict of ConfigObj | property_name variant — config metadata, NOT tables | rarely used directly |
+| `resource.dictrwd` | `TableList[Item]` | Auto-discovered from dictrwdSchema (type_key='dictrwd') | `d.condition_conditioncode.df` (after `load_into_local()` remaps `d`) |
+| `resource.d` | dict of ConfigObj | property_name for dictrwd — NOT tables | rarely used directly; use `d` only after `load_into_local()` |
+| `resource.proj` | dict of ConfigObj | projectTables entries | internal — consumed to build `self.e` |
+| `resource.e` | `Extract` | `Extract(resource.proj)` during finish_init | `e.cohort.showIU()` — the main user-facing API |
 
 ## Workflow for LLM Project Generation
 
