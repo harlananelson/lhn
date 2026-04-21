@@ -279,11 +279,24 @@ def identify_target_records(entitySource, elementIndex, elementExtract,
         ... )
     """
     if not isinstance(entitySource, DataFrame):
-        raise ValueError("entitySource must be a DataFrame")
-    
+        raise ValueError(
+            f"identify_target_records: entitySource must be a DataFrame, "
+            f"got {type(entitySource).__name__}"
+        )
+
     if not isinstance(elementExtract, DataFrame):
-        logger.warning("elementExtract is not a DataFrame, returning as-is")
-        return elementExtract
+        # Previously this logged a warning and returned elementExtract
+        # as-is. That silently propagated None up to the caller (typically
+        # via entityExtract), which then assigned None to self.df — the
+        # real failure surfaced three frames later as AttributeError. An
+        # inner-join against a non-DataFrame index is never valid; refuse.
+        raise ValueError(
+            f"identify_target_records: elementExtract must be a DataFrame, "
+            f"got {type(elementExtract).__name__}. The index table has no "
+            f"DataFrame — check whether create_extract() was called and "
+            f"produced a non-empty result, or whether the Item's status is "
+            f"'ITEM_FAILED'."
+        )
     
     logger.info(f"identify_target_records: index={elementIndex}")
     
