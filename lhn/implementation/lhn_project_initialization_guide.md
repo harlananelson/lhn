@@ -186,6 +186,29 @@ Diabetes,E11.9,"Type 2 diabetes without complications"
 Diabetes,E11.65,"Type 2 diabetes with hyperglycemia"
 ```
 
+**Do NOT reassign `e.<item>.csv = os.path.join(...)` in the
+notebook.** `Resources(...)` calls `Item.__init__`, which already
+sets `self.csv = f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` from
+config at construction time. The notebook just calls
+`e.comorbidity_codes.load_csv_as_df()` and reads from the
+config-driven path. If the input CSV isn't at the default location,
+override `csv:` in the YAML item config (with template variables like
+`${systemuser}` that Resources resolves) — never in the notebook.
+
+```yaml
+# GOOD — one source of truth in YAML
+comorbidity_codes:
+  label: "Comorbidity codes from clinical review"
+  csv: "/home/${systemuser}/work/Users/${systemuser}/Projects/MyStudy/control/codes.csv"
+  indexFields: [...]
+```
+
+```python
+# BAD — reassignment in the notebook hides the config-driven path
+e.comorbidity_codes.csv = os.path.join(project_path, 'control', 'codes.csv')
+e.comorbidity_codes.load_csv_as_df()
+```
+
 ### 3.4 Verified Codes Table
 
 Output of `create_extract`:
