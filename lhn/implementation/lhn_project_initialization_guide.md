@@ -389,21 +389,33 @@ db = resource.db
 # {DOMAIN} EXTRACTION
 # ============================================================================
 
-# Step 1: Identify codes
-print("Step 1: Identifying {domain} codes...")
+# Step 1a: Build the raw code list (from config dict or CSV).
+print("Step 1a: Building {domain} raw codes...")
+e.{domain}_raw.dict2pyspark()      # or: e.{domain}_raw.load_csv_as_df()
+
+# Step 1b: Verify raw codes against the dictionary table.
+# elementList and elementListSource must be DIFFERENT objects:
+#   - elementList = e.{domain}_raw   (the raw code list)
+#   - elementListSource = d.{reference_table}.df  (the dictionary)
+# Passing the same object to both is a self-loop and produces no useful
+# output.
+print("Step 1b: Verifying {domain} codes against dictionary...")
 e.{domain}_codes.create_extract(
-    elementList=d.{reference_table},
+    elementList=e.{domain}_raw,
     elementListSource=d.{reference_table}.df,
-    find_method='regex'
+    find_method='regex',
+    sourceField='conditioncode_standard_id',    # adjust per domain
 )
 e.{domain}_codes.attrition()
 
-# Step 2: Extract encounters
+# Step 2: Extract encounters — 1st positional is elementList, 2nd is
+# entitySource. The elementList (verified codes) carries its indexFields
+# into entityExtract as the default join key, so if you want a different
+# join key pass elementIndex= explicitly.
 print("Step 2: Extracting {domain} encounters...")
 e.{domain}_encounters.entityExtract(
-    elementList=e.{domain}_codes_verified,
-    entitySource=r.{sourceTable},
-    cacheResult=True
+    e.{domain}_codes,             # verified codes (elementList)
+    r.{sourceTable}.df,           # patient-level source (entitySource)
 )
 e.{domain}_encounters.attrition()
 
@@ -643,21 +655,28 @@ resource = Resources(
 )
 
 locals().update(resource.load_into_local())
-locals().update(local_vars)
-r = resource.r
+# r, e, d, RWDSchema, projectSchema, etc. are now bound as locals.
 
 # Cell 2: Identify DM2 codes
 # ============================================================================
-# Step 1: Identify DM2 condition codes
+# Step 1a: Build raw DM2 code list from config dictionary
+# ============================================================================
+
+e.dm2_raw.dict2pyspark()
+e.dm2_raw.print_pd(label='DM2 raw codes')
+
+# ============================================================================
+# Step 1b: Verify against the dictionary table (d.*, NOT r.*)
 # ============================================================================
 
 e.dm2_codes.create_extract(
-    elementList=e.dm2_codes,
-    elementListSource=r.condition_codes.df,
-    find_method='regex'
+    elementList=e.dm2_raw,                            # raw codes ExtractItem
+    elementListSource=d.condition_conditioncode.df,   # DICTIONARY — d.*, not r.*
+    find_method='regex',
+    sourceField='conditioncode_standard_id',
 )
 
-print(f"DM2 codes: {e.dm2_codes.df.count()}")
+print(f"DM2 codes verified: {e.dm2_codes.df.count()}")
 e.dm2_codes.attrition()
 
 # Cell 3: Extract encounters
@@ -666,9 +685,8 @@ e.dm2_codes.attrition()
 # ============================================================================
 
 e.dm2_encounters.entityExtract(
-    elementList=e.dm2_codes_verified,
-    entitySource=r.conditionSource,
-    cacheResult=True
+    e.dm2_codes,           # 1st positional: elementList (verified codes)
+    r.conditionSource.df,  # 2nd positional: entitySource (patient-level)
 )
 
 print(f"Encounters: {e.dm2_encounters.df.count()}")
