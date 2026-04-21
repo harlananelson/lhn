@@ -75,7 +75,7 @@ projectTables:
   # Verified codes (output of create_extract)
   primary_codes_verified:
     label: "Verified primary codes"
-    groupName: "regexgroup"
+    groupName: "group"           # library default; override only if the source has its own 'group' column
     indexFields:
       - "conditioncode_standard_primaryDisplay"
       - "conditioncode_standard_id"
@@ -165,7 +165,7 @@ projectTables:
 
   medication_codes_verified:
     label: "Verified medication codes"
-    groupName: "medgroup"
+    groupName: "group"             # library default
     indexFields:
       - "drugcode_standard_primaryDisplay"
       - "drugcode_standard_id"
@@ -215,7 +215,7 @@ projectTables:
 
   lab_codes_verified:
     label: "Verified lab codes"
-    groupName: "labgroup"
+    groupName: "group"             # library default
     indexFields:
       - "labcode_standard_primaryDisplay"
       - "labcode_standard_id"

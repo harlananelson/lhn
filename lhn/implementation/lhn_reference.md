@@ -112,7 +112,12 @@ Extract (lhn.core.extract)
 ├── One attribute per entry in projectTables → ExtractItem
 ├── .properties()   : list of ExtractItem names
 ├── .__iter__       : iterate names
-├── .__getitem__    : e['name-with-hyphens'] for non-identifier names
+├── .__getitem__    : e['name'] retrieves ExtractItem by string key
+├── .__contains__   : `'name' in e` presence check
+#   Note: names that aren't valid Python identifiers (hyphens, leading
+#   digits, etc.) can be retrieved via e['foo-bar'] but NOT via
+#   getattr(e, 'foo-bar'). Some internal callers use getattr (including
+#   write_all); keep config names as valid identifiers when possible.
 ├── .__len__        : number of ExtractItems
 └── .write_all(names=None, skip_empty=True, verbose=True)
                     : persist every (or specified) ExtractItem via .write()

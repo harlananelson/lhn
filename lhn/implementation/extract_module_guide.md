@@ -19,7 +19,7 @@ you can copy for a new project.
   │   mycodes: {...}     │  the YAML and builds a       │   .mycodes       │
   │   mycodesVerified:…  │  TableList of ExtractItem    │   .mycodesVer…   │
   │   myEncounter: {...} │  instances — one per entry   │   .myEncounter   │
-  │   myEncounterId:{…}  │                              │                  │
+  │   myCohort:{…}  │                              │                  │
   └──────────┬───────────┘                              └────────▲─────────┘
              │                                                   │
              ▼                                                   │
@@ -31,7 +31,7 @@ you can copy for a new project.
              ├─ e.mycodes.dict2pyspark()        # stage 1: load/build a code list
              ├─ e.mycodesVerified.create_extract(...)  # stage 2: verify against dictionary
              ├─ e.myEncounter.entityExtract(...)       # stage 3: pull patient records
-             └─ e.myEncounterId.write_index_table(...) # stage 4: one row per person
+             └─ e.myCohort.write_index_table(...) # stage 4: one row per person
 ```
 
 The four things to remember:
@@ -320,10 +320,22 @@ import sys, getpass
 from pathlib import Path
 
 systemuser = getpass.getuser()
-user_path = [p for p in (
+# Path discovery: HDL layouts the user data under either
+# ~/work/Users/<user> or ~/work/IUH/<user>. Pick whichever exists.
+# Fail LOUDLY with a useful message if neither is present (subscript
+# of an empty list would otherwise raise an opaque IndexError).
+_candidates = [
     os.path.join(Path.home(), 'work', 'Users', systemuser),
     os.path.join(Path.home(), 'work', 'IUH', systemuser),
-) if os.path.exists(p)][0]
+]
+_found = [p for p in _candidates if os.path.exists(p)]
+if not _found:
+    raise RuntimeError(
+        f"Could not locate user data path for '{systemuser}'. "
+        f"Checked: {_candidates}. On HDL the path should be one of "
+        f"these; on a local dev box set user_path explicitly."
+    )
+user_path = _found[0]
 project_path = os.path.join(user_path, 'Projects', '<YourProject>')
 os.environ['DATA_PATH'] = user_path  # exposed to downstream CSV exports
 
@@ -583,7 +595,7 @@ in production pipelines. If something breaks, check these first.
 1. **`elementListSource=r.*`** instead of `d.*` → query never terminates.
 2. **`d = resource.d` without `locals().update(resource.load_into_local())`** → `d.<table>.df` raises AttributeError.
 3. **Two notebooks writing to the same ExtractItem** → YAML last-write-wins on Hive; subtle content drift between runs. Enforce one writer per table.
-4. **`dict2pyspark(columnname=['codes'])` with a list default** (lhn < 0.2.1) → creates pandas MultiIndex columns, Spark column names become `('codes',)`. Use `columnname='codes'`.
+4. **`dict2pyspark(columnname=['codes'])` with a list default** (historical bug in lhn < 0.2.1; FIXED in 0.2.1) → created pandas MultiIndex columns, Spark column names became `('codes',)`. Use `columnname='codes'` (default is now a string, so passing nothing at all is safe).
 5. **`entityExtract(entitySource=..., elementIndex=...)` with no `elementList`** → first positional arg is required; signature changed in `c745401`.
 6. **Manual `e.foo.df = ...` assignment** → does NOT auto-write. Call `e.foo.write()` or `e.write_all(...)`.
 7. **`create_extract` result assigned directly to a patient-level target** → you get the dictionary rows, not patient records. Always follow `create_extract` with `entityExtract`.

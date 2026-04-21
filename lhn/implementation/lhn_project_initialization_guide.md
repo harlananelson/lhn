@@ -661,7 +661,7 @@ projectTables:
 # DiabetesT2Study: Cohort Identification
 # ============================================================================
 
-from lhn import Resources, Extract
+from lhn import Resources
 from spark_config_mapper.utils import writeTable
 from pyspark.sql import functions as F
 from pathlib import Path
