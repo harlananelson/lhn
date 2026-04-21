@@ -7,7 +7,7 @@
 ## Table of Contents
 
 1. [Project Definition Template](#1-project-definition-template)
-2. [000-config.yaml Generation](#2-000-configyaml-generation)
+2. [000-control.yaml Generation](#2-000-configyaml-generation)
 3. [Table Definition Patterns](#3-table-definition-patterns)
 4. [Code Input Methods](#4-code-input-methods)
 5. [Notebook Generation Patterns](#5-notebook-generation-patterns)
@@ -70,7 +70,7 @@ PROJECT_DEFINITION:
 
 ---
 
-## 2. 000-config.yaml Generation
+## 2. 000-control.yaml Generation
 
 ### 2.1 Header Section
 
@@ -367,16 +367,15 @@ from pyspark.sql import functions as F
 from pathlib import Path
 
 project = '{project_name}'
-basePath = Path.home() / 'work/Users/hnelson3'
-
 resource = Resources(
-    project=project,
-    spark=spark,
-    basePath=basePath,
-    process_all=True
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    debug=True,                                    # logs config load + processing
+    # finish_init=True                             # default; skips only if False
 )
 
-local_vars = resource.load_into_local(schemakey='projectSchema', extractName='e')
+locals().update(resource.load_into_local())
 locals().update(local_vars)
 
 r = resource.r
@@ -540,7 +539,7 @@ PROJECT_DEFINITION:
   required_domains: [conditions, encounters, demographics, labs, medications]
 ```
 
-### 6.2 Generated 000-config.yaml
+### 6.2 Generated 000-control.yaml
 
 ```yaml
 # ============================================================================
@@ -635,16 +634,15 @@ from pyspark.sql import functions as F
 from pathlib import Path
 
 project = 'DiabetesT2Study'
-basePath = Path.home() / 'work/Users/hnelson3'
-
 resource = Resources(
-    project=project,
-    spark=spark,
-    basePath=basePath,
-    process_all=True
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    debug=True,                                    # logs config load + processing
+    # finish_init=True                             # default; skips only if False
 )
 
-local_vars = resource.load_into_local(schemakey='projectSchema', extractName='e')
+locals().update(resource.load_into_local())
 locals().update(local_vars)
 r = resource.r
 
@@ -726,8 +724,8 @@ e.dm2_index.tabulate(by='conditioncode_standard_primaryDisplay', obs=20)
 
 ### 7.2 Notebook Validation
 
-- [ ] Resources initialized with `process_all=True`
-- [ ] `load_into_local()` called before using `e`
+- [ ] Resources initialized with the 3-config signature (`local_config=`, `global_config=`, `schemaTag_config=`); `finish_init=True` is the default
+- [ ] `locals().update(resource.load_into_local())` called before using `d`
 - [ ] Each domain follows 3-step pattern
 - [ ] `attrition()` called after each step
 - [ ] Tables written with `writeTable()`

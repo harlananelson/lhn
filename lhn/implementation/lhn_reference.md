@@ -20,17 +20,18 @@
 
 | Term | Type | Definition | Example |
 |------|------|------------|---------|
-| `Resources` | Class | Central orchestrator managing configuration, schemas, and data access | `resource = Resources(project='Study', spark=spark, process_all=True)` |
-| `Extract` | Class | Container for ExtractItem objects representing project output tables | `e = Extract(resource.proj)` |
-| `ExtractItem` | Class | Extends Item with extraction workflow methods | `e.cohort.create_extract(...)` |
-| `DB` | Class | Wrapper providing direct DataFrame access from TableList | `resource.r.conditionSource` returns DataFrame |
-| `SharedMethodsMixin` | Mixin | Common methods: showIU(), attrition(), write(), toPandas(), etc. | Available on Item, ExtractItem, DB |
+| `Resources` | Class | Central orchestrator managing configuration, schemas, and data access | `Resources(local_config=..., global_config=..., schemaTag_config=...)` |
+| `Extract` | Class | Container for ExtractItem objects, auto-created during `Resources.finish_init` (default True) | `e = resource.e` |
+| `ExtractItem` | Class | A single configured table; has `.df`, extraction verbs (`create_extract`, `entityExtract`, `write_index_table`, `load_csv_as_df`, `dict2pyspark`) | `e.cohort.create_extract(...)` |
+| `Item` | Class | Single-source-table object from `spark_config_mapper`; `r.*` and `d.*` members are `Item`s | `r.conditionSource.df` |
+| `TableList` | Class | Dict-like container of `Item`s indexed by name; what `resource.r`, `resource.rwd`, `resource.dictrwd` actually are | `for name in r: print(r[name].df.count())` |
+| `SharedMethodsMixin` | Mixin | Methods common to Item / ExtractItem: `showIU`, `attrition`, `tabulate`, `print_pd`, `write`, `to_csv`, `properties`, `values` | Available on Item, ExtractItem |
 | `showIU` | Method | Display sample records filtered by tenant (e.g., IUHealth) | `e.cohort.showIU(obs=10, tenant=127)` |
 | `create_extract` | Method | Step 1: Identify codes from reference tables using regex/merge | `e.codes.create_extract(elementList=..., find_method='regex')` |
-| `entityExtract` | Method | Step 2: Extract patient records matching identified codes | `e.encounters.entityExtract(elementList=e.codes, entitySource=r.source)` |
+| `entityExtract` | Method | Step 2: Extract patient records matching identified codes. 1st positional arg is `elementList`, 2nd is `entitySource` | `e.encounters.entityExtract(e.codes, r.source.df)` |
 | `write_index_table` | Method | Step 3: Create patient-level summary with first/last dates | `e.index.write_index_table(inTable=e.encounters)` |
 | `attrition` | Method | Display record and patient counts with date ranges | `item.attrition()` |
-| `tabulate` | Method | Aggregate and display counts by field | `item.tabulate(by='field', obs=20)` |
+| `tabulate` | Method | Aggregate + display counts by column. Actual signature: `tabulate(group_cols=None, count_distinct=None, order_by='count', limit=50, dropna=False, show=False)` | `item.tabulate(group_cols=['IcdPheno'], show=True)` |
 | `cohort` | Concept | Set of patients meeting study criteria | Identified by personid + tenant |
 | `index_date` | Concept | First occurrence date for a patient | `index_COND` = first condition date |
 | `last_date` | Concept | Last occurrence date for a patient | `last_COND` = last condition date |
@@ -242,7 +243,7 @@ e.condition_index.write_index_table(
 
 ## 6. CONFIGURATION STRUCTURE
 
-### 6.1 000-config.yaml (Project Config)
+### 6.1 000-control.yaml (Project Config)
 
 ```yaml
 project: MyStudy
@@ -435,7 +436,7 @@ count_people(
 callFunProcessDataTables:
   RWDcallFunc:
     data_type: 'RWDTables'       # Table definitions (in config-RWD.yaml)
-    schema_type: 'RWDSchema'     # Schema key (in 000-config.yaml)
+    schema_type: 'RWDSchema'     # Schema key (in 000-control.yaml)
     type_key: 'rwd'              # → resource.rwd (TableList)
     property_name: 'r'           # → resource.r (DB)
 ```
@@ -447,23 +448,23 @@ from lhn import Resources, Extract
 
 # Resources reads callFunProcessDataTables and creates all objects
 resource = Resources(
-    project='MyStudy',
-    spark=spark,
-    basePath=Path.home()/'work/Users/hnelson3',
-    config_file='000-config.yaml',
-    process_all=True                 # Auto-process all configured schemas
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    # finish_init=True is the default and drives all schema processing.
+    # Set finish_init=False only if you want to instantiate Resources
+    # without loading any data (rare; mostly for unit tests).
 )
 
-# Attributes created based on callFunProcessDataTables rules:
-r = resource.r      # DB for RWD source tables (DataFrame access)
-db = resource.db    # DB for project tables (DataFrame access)
-
-# Create Extract for rich methods
-e = Extract(resource.proj)
+# Attributes created based on callFunProcessDataTables rules (type_key):
+r = resource.r          # TableList[Item] for RWD source tables
+d = resource.dictrwd    # TableList[Item] for dictionary tables
+e = resource.e          # Extract of project output ExtractItems
 
 # Access tables
-r.conditionSource.filter(...)       # DB: direct DataFrame access
-e.cohort.showIU(obs=10)             # Extract: rich methods
+r.conditionSource.df.filter(...)    # Item: .df is the DataFrame
+e.cohort.showIU(obs=10)             # ExtractItem: rich methods
+d.condition_conditioncode.df.count()  # Dictionary Item
 ```
 
 ### 10.3 Preferred Pattern: load_into_local
@@ -471,14 +472,20 @@ e.cohort.showIU(obs=10)             # Extract: rich methods
 ```python
 from lhn import Resources
 
-resource = Resources(project='MyStudy', spark=spark, process_all=True)
+resource = Resources(
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    debug=True,                                    # logs config load + processing
+    # finish_init=True                             # default; skips only if False
+)
 
-# load_into_local creates Extract and loads everything to local namespace
-locals().update(resource.load_into_local(
-    everything=False,
-    schemakey='projectSchema',
-    extractName='e'
-))
+# load_into_local surfaces all type_key + property_name bindings into
+# the local namespace (r, e, d, rwd, RWDSchema, projectSchema, etc.).
+# Signature: load_into_local(everything=False, load_schemas=True).
+# Pass everything=True to include all config values (disease,
+# schemaTag, dataLoc, parquetLoc) in addition to the objects.
+locals().update(resource.load_into_local())
 
 # Now available directly: e, r, db, etc.
 e.cohort.showIU(obs=10)
@@ -507,28 +514,34 @@ from pathlib import Path
 
 # Initialize
 resource = Resources(
-    project='DiabetesStudy',
-    spark=spark,
-    basePath=Path.home()/'work',
-    process_all=True
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
 )
 
-e = Extract(resource.proj)
+e = resource.e          # auto-created by finish_init (default)
 r = resource.r
+d = resource.dictrwd    # dictionary tables — use as elementListSource
 
-# Step 1: Identify diabetes codes (E11.x)
+# Step 1a: Build raw code list from YAML dictionary
+e.dm2_raw.dict2pyspark()
+
+# Step 1b: Verify against the condition *dictionary* (d.*, not r.*).
+# elementList and receiver must be different items; receiver holds the
+# verified output.
 e.dm2_codes.create_extract(
-    elementList=e.dm2_codes,
-    elementListSource=r.condition_codes.df,
-    find_method='regex'
+    elementList=e.dm2_raw,
+    elementListSource=d.condition_conditioncode.df,   # DICTIONARY, not r.*
+    find_method='regex',
+    sourceField='conditioncode_standard_id',
 )
 e.dm2_codes.attrition()
 
-# Step 2: Extract condition encounters
+# Step 2: Extract condition encounters — 1st positional is elementList,
+# 2nd is entitySource
 e.dm2_encounters.entityExtract(
-    elementList=e.dm2_codes,
-    entitySource=r.conditionSource,
-    cacheResult=True
+    e.dm2_codes,                # verified codes
+    r.conditionSource.df,       # patient-level source
 )
 e.dm2_encounters.attrition()
 
@@ -552,7 +565,7 @@ e.persontenant.tabulate(by='tenant')
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `AttributeError: 'Resources' has no attribute 'rwd'` | Schema not found or not processed | Check schema exists, use `process_all=True` |
+| `AttributeError: 'Resources' has no attribute 'rwd'` | Schema not found or not processed | Check schema exists, ensure the schema exists and `finish_init=True` (the default) is in effect |
 | `KeyError: 'projectTables'` | Config not loaded | Verify config file path and structure |
 | `Empty DataFrame` | No matching records | Check date ranges, code patterns, schema |
 | `Table not found` | Output table doesn't exist yet | Run extraction workflow first |

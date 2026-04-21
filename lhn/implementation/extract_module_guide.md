@@ -34,21 +34,47 @@ you can copy for a new project.
              └─ e.myEncounterId.write_index_table(...) # stage 4: one row per person
 ```
 
-The three things to remember:
+The four things to remember:
 
 1. **One ExtractItem per YAML entry.** Adding `myNewTable:` under
    `projectTables:` creates `e.myNewTable` automatically after
-   `Resources(...)` runs. `e` itself is the `Extract` (the container /
-   TableList); each `e.<name>` is an `ExtractItem` (one table, has a
-   `.df` property and the extraction methods).
-2. **Four canonical verbs** do the real work: `dict2pyspark`,
+   `Resources(local_config=..., global_config=..., schemaTag_config=...)`
+   runs. `e = resource.e` works because `finish_init=True` is the
+   default — it's not an optional step you add later.
+2. **Five extraction verbs** do the real work: `dict2pyspark`,
    `load_csv_as_df`, `create_extract`, `entityExtract`,
-   `write_index_table`. All four **auto-write** to
-   `<projectSchema>.<name>` when they complete.
-3. **Dictionary tables** (`d.*`) are distinct-code reference tables from a
+   `write_index_table`. All five **auto-write** to
+   `<projectSchema>.<name>` when they complete. Manual `self.df = ...`
+   assignment does NOT auto-write — call `.write()` explicitly after.
+3. **`d` is NOT `resource.d`.** `resource.d` is a dict of config
+   objects; the dictionary TableList is at `resource.dictrwd`.
+   `locals().update(resource.load_into_local())` in the setup cell
+   remaps `d` to point at `dictrwd`. Skip that line and
+   `d.<table>.df` raises AttributeError. This is the single most
+   common failure mode in this library.
+4. **Dictionary tables** (`d.*`) are distinct-code reference tables from a
    *dictionary* schema (`dictrwdSchema` in YAML). They are **not**
    patient-level. Use them as the source for regex scans — never scan
-   a patient-level table.
+   a patient-level table. A regex scan over patient-level data will
+   silently hang.
+
+### Status-check pattern (run after Resources init)
+
+Processed items can silently fail in lenient mode — `item.process()`
+catches flatten/insert errors, sets `status = ITEM_FAILED`, and
+leaves `item.df` pointing at the **un-processed** raw DataFrame. No
+exception is raised. Always run the report and confirm status
+before relying on downstream data:
+
+```python
+print(r.report_str())                            # summary of every Item
+assert all(item.status == 'PROCESSED'            # fail loud on silent loss
+           for item in r.values())
+```
+
+For new pipelines / CI, pass `strict=True` to `processDataTables`
+and `validate_tables_config`; this upgrades warnings to exceptions
+at the table-load point.
 
 ### Vocabulary: `Extract` vs `ExtractItem`
 
@@ -202,10 +228,10 @@ you can set on each item are grouped by which verb consumes them.
 
 | Key | Purpose |
 |---|---|
-| `dictionary:` | `{group_name: regex_pattern}` dict embedded in YAML. |
-| `listIndex` | Column name for the pattern column in the resulting DataFrame. Defaults to `'codes'`. |
-| `sourceField` | Field name *that the downstream `create_extract` will scan* (you set it here so the code list knows its target). |
-| `complete` | Boolean flag; informational (not consumed by the method). |
+| `dictionary:` | `{group_name: regex_pattern}` dict embedded in YAML. This is the only YAML key `dict2pyspark` actually reads. |
+| `listIndex` | Stored on the Item but NOT read by `dict2pyspark` itself. The method uses its `columnname=` parameter (default `'codes'`) for the pattern column. `listIndex` is read later by `_extract_by_regex` when this Item is passed as `create_extract`'s `elementList`. |
+| `sourceField` | Stored on the Item but NOT read by `dict2pyspark`. Used by the downstream `create_extract` receiver. |
+| `complete` | Stored on the Item but read nowhere in the codebase — informational only. |
 
 **`load_csv_as_df` (builds codes from a CSV):**
 
@@ -564,3 +590,13 @@ in production pipelines. If something breaks, check these first.
 8. **Changing `000-control.yaml` without refreshing Resources** → stale schema mappings, "table not found", or worse, silent old-value use. Re-run Cell 7 or restart kernel.
 9. **Hardcoding `~/work/Users/hnelson3`** as a fallback path → breaks for any other user. Use `getpass.getuser()` + existence check.
 10. **Writing a new table via `SimpleNamespace(df=None)`** as a workaround for no config entry → bypasses attrition, partitioning, and `write_all`. Add the entry to YAML instead.
+11. **`item.df` after a process failure returns the raw, un-flattened DataFrame** — `Item.process()` catches errors, sets `status = ITEM_FAILED`, and the `df` setter refuses to clobber that status. No exception surfaces. Always check `item.status == 'PROCESSED'` or run `r.report_str()` after `processDataTables`.
+12. **`inputRegex` patterns match the underscore-flattened column name**, not the dotted source path. `^encounter\.id$` silently matches nothing; use `^encounter_id$`. Matching is case-insensitive via `re.search`.
+13. **Multi-array source tables silently drop arrays** under default lenient `process()` (`error_on_multiple_arrays=False`). The dropped array columns are named only in a debug log. Specify `explode_array=` at the call site, or pass `strict=True` to `processDataTables` so the drop becomes an error.
+14. **`code: ""` or missing `code:` in a `write_index_table` target** produces columns literally named `index_` and `last_` (trailing underscore). Always set `code: "X"` so you get `index_X` / `last_X`.
+15. **`max_gap` produces multi-row-per-person output.** Downstream joins on `personid` without also keying on the episode id will multiply rows. Read `identification.py:155-237` before adding `max_gap` to a new table.
+16. **`insert:` directives run `eval(f"df.{code}")`** — arbitrary Python with caller privileges. Never load YAML with `insert:` entries from an untrusted source, and prefer explicit notebook transforms over YAML-embedded `eval`.
+17. **`load_into_local(everything=False)` (default) silently filters out missing tables.** If a table you expect isn't there, you get no error. Call `everything=True` or run `print(r.report_str())` first.
+18. **`ItemLoadError` raises only on first `.df` access.** After the first raise, `_df` is still `None` and subsequent `.df` access returns `None` because the `status == ITEM_FAILED` check fires before load retry. Don't rely on a second access to recover.
+19. **`writeTable` partition silently skipped** when `partitionBy` is misspelled (`if partitionBy and partitionBy in df.columns`). No error, no partitioning. Inspect the resulting table's `DESCRIBE EXTENDED`.
+20. **`dataLoc` trailing slash matters.** `Item.csv = f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` has NO separator between `dataLoc` and `TBL`, so a missing `/` gives you paths like `.../SickleCell_AIscdpatient_SCD_RWD.csv`. Always end `dataLoc` with `/`.

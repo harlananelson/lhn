@@ -12,12 +12,12 @@ This directory contains documentation and examples for understanding and using t
 
 ## Three-Tier Configuration System
 
-Only **000-config.yaml** changes per project. The other two tiers are shared infrastructure.
+Only **000-control.yaml** changes per project. The other two tiers are shared infrastructure.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  TIER 1: 000-config.yaml (CHANGES PER PROJECT)                              │
-│  Location: {basePath}/Projects/{project}/000-config.yaml                    │
+│  TIER 1: 000-control.yaml (CHANGES PER PROJECT)                              │
+│  Location: {basePath}/Projects/{project}/000-control.yaml                    │
 │  Contains: project name, dates, schema mappings, projectTables              │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -40,10 +40,10 @@ Only **000-config.yaml** changes per project. The other two tiers are shared inf
 
 | Configuration | File | Changes Per Project? |
 |--------------|------|---------------------|
-| Project name, disease, investigators | `000-config.yaml` | **YES** |
-| Study dates (historyStart, historyStop) | `000-config.yaml` | **YES** |
-| Schema mappings (RWDSchema → physical) | `000-config.yaml` | **YES** |
-| `projectTables` (output tables) | `000-config.yaml` | **YES** |
+| Project name, disease, investigators | `000-control.yaml` | **YES** |
+| Study dates (historyStart, historyStop) | `000-control.yaml` | **YES** |
+| Schema mappings (RWDSchema → physical) | `000-control.yaml` | **YES** |
+| `projectTables` (output tables) | `000-control.yaml` | **YES** |
 | `callFunProcessDataTables` rules | `config-global.yaml` | NO |
 | Source table definitions | `config-RWD.yaml` | NO |
 | `inputRegex`, `insert` transforms | `config-RWD.yaml` | NO |
@@ -62,7 +62,7 @@ the_config-files/
 
 ### For Humans
 
-1. Copy `000-config-template.yaml` to your project directory as `000-config.yaml`
+1. Copy `000-config-template.yaml` to your project directory as `000-control.yaml`
 2. Replace all `{placeholder}` values with your project-specific values
 3. Create CSV code files following `example-codes.csv` format
 4. Follow the notebook patterns in `lhn_project_initialization_guide.md`
@@ -74,7 +74,7 @@ Include these files in your prompt:
 2. `lhn_project_initialization_guide.md` - For generating project files
 
 **Critical for LLMs**:
-- **Only generate `000-config.yaml`** - never modify config-global.yaml or config-RWD.yaml
+- **Only generate `000-control.yaml`** - never modify config-global.yaml or config-RWD.yaml
 - `projectTables` define OUTPUT tables the project creates
 - Source tables (conditionSource, medicationSource, etc.) are already defined in config-RWD.yaml
 
@@ -85,7 +85,7 @@ Include these files in your prompt:
 | Type | Defined In | Purpose | Examples |
 |------|-----------|---------|----------|
 | Source Tables | `config-RWD.yaml` | READ from source schemas | `conditionSource`, `medicationSource` |
-| Project Tables | `000-config.yaml` | CREATED by this project | `cohort`, `demographics`, `ads` |
+| Project Tables | `000-control.yaml` | CREATED by this project | `cohort`, `demographics`, `ads` |
 
 ### Three-Step Extraction Workflow
 
@@ -100,7 +100,7 @@ Step 3: write_index_table  → Create patient-level summary
 ### Code Input Methods
 
 1. **CSV Files** (PREFERRED) - Clinician-verified codes
-2. **Dictionary** - Simple regex patterns in 000-config.yaml
+2. **Dictionary** - Simple regex patterns in 000-control.yaml
 3. **Reference Join** - Join against existing dictionary tables
 
 ## Usage Pattern
@@ -112,7 +112,13 @@ from lhn import Resources, Extract
 
 # Initialize - Resources reads callFunProcessDataTables from config-global.yaml
 # and automatically creates all TableList/DB objects based on your schemas
-resource = Resources(project='MyStudy', spark=spark, process_all=True)
+resource = Resources(
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    debug=True,                                    # logs config load + processing
+    # finish_init=True                             # default; skips only if False
+)
 
 # Resources auto-creates based on callFunProcessDataTables rules:
 #   resource.rwd   → TableList from RWDTables + RWDSchema
@@ -120,7 +126,7 @@ resource = Resources(project='MyStudy', spark=spark, process_all=True)
 #   resource.proj  → TableList from projectTables + projectSchema
 #   resource.db    → DB wrapper for proj
 
-e = Extract(resource.proj)  # Wrap project tables in ExtractItem
+e = resource.e   # auto-created by finish_init (default)  # Wrap project tables in ExtractItem
 r = resource.r              # Source table access
 
 # Three-step extraction
@@ -142,44 +148,48 @@ In `config-global.yaml`, each rule maps a schema type to attribute names:
 callFunProcessDataTables:
   RWDcallFunc:
     data_type: 'RWDTables'       # Table definitions key (in config-RWD.yaml)
-    schema_type: 'RWDSchema'     # Schema key (in 000-config.yaml)
+    schema_type: 'RWDSchema'     # Schema key (in 000-control.yaml)
     type_key: 'rwd'              # → resource.rwd (TableList)
     property_name: 'r'           # → resource.r (DB wrapper)
 
   projectcallFunc:
-    data_type: 'projectTables'   # Table definitions key (in 000-config.yaml)
-    schema_type: 'projectSchema' # Schema key (in 000-config.yaml)
+    data_type: 'projectTables'   # Table definitions key (in 000-control.yaml)
+    schema_type: 'projectSchema' # Schema key (in 000-control.yaml)
     type_key: 'proj'             # → resource.proj (TableList)
     property_name: 'db'          # → resource.db (DB wrapper)
 ```
 
-When `Resources(process_all=True)` runs, it:
+When `Resources(...)` runs with `finish_init=True` (the default), it:
 1. Reads `callFunProcessDataTables` from config-global.yaml
 2. For each rule where the schema exists, calls `processDataTables` internally
-3. Creates attributes on the Resource object (e.g., `resource.rwd`, `resource.r`)
+3. Creates attributes on the Resource object (e.g., `resource.rwd`, `resource.r`, `resource.dictrwd`)
+4. Builds `resource.e` as the `Extract` container over `projectTables`
 
-**You don't call `processDataTables` directly** - it's automated by the config.
+**You don't call `processDataTables` directly** — it's automated by the config.
 
 ### The Extract Pattern (Method Enrichment)
 
-The `Extract` class wraps table Items in `ExtractItem` objects with rich methods:
+`resource.e` is already an `Extract` instance after Resources init. Each
+entry in `projectTables:` becomes an `ExtractItem` on it:
 
 ```python
-# ss is a TableList from processDataTables
-ss = processDataTables(config['RWDTables'], schema=RWDSchema, ...)
+resource = Resources(
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+)
+e = resource.e   # Extract, auto-created by finish_init (default)
 
-# Wrap in Extract to get rich methods
-ess = Extract(ss)
-
-# Now you have ExtractItem methods:
-ess.death.showIU(obs=5)           # Display sample (tenant-filtered)
-ess.death.attrition()              # Record/person counts
-ess.death.location                 # Table path
-ess.death.df                       # Spark DataFrame
-ess.death.write()                  # Write to Spark table
-ess.death.create_extract(...)      # Find codes via regex/merge
-ess.death.entityExtract(...)       # Extract patient records
-ess.death.write_index_table(...)   # Create patient-level index
+# ExtractItem methods:
+e.death.showIU(obs=5)           # Display sample (tenant-filtered)
+e.death.attrition()              # Record/person counts
+e.death.location                 # Table path
+e.death.df                       # Spark DataFrame
+e.death.write()                  # Write to Spark table
+e.death.create_extract(...)      # Find codes via regex/merge
+e.death.entityExtract(...)       # Extract patient records
+e.death.write_index_table(...)   # Create patient-level index
+e.death.properties()             # Introspect YAML-sourced attributes
 ```
 
 **Key Methods on ExtractItem:**
@@ -203,15 +213,20 @@ For clean notebook code, use this setup cell with `load_into_local`:
 #| include: false
 from lhn import Resources
 
-resource = Resources(project='MyStudy', spark=spark, process_all=True)
+resource = Resources(
+    local_config='000-control.yaml',
+    global_config='configuration/config-global.yaml',
+    schemaTag_config='configuration/config-RWD.yaml',
+    debug=True,                                    # logs config load + processing
+    # finish_init=True                             # default; skips only if False
+)
 
-# load_into_local creates the Extract object AND loads variables
-locals().update(resource.load_into_local(
-    everything=False,
-    schemakey='projectSchema',
-    extractName='e'
-))
-# Now available: e (Extract), r (DB for source), db (DB for project), etc.
+# load_into_local surfaces r, e, dictrwd/d, and schema name strings
+# into this cell's locals namespace. Signature:
+# load_into_local(everything=False, load_schemas=True)
+# Pass everything=True for also disease, schemaTag, dataLoc, etc.
+locals().update(resource.load_into_local())
+# Now available: r, e, d (remapped to dictrwd), RWDSchema, projectSchema, etc.
 ```
 
 Now you can write clean analysis cells:
@@ -243,7 +258,7 @@ After `Resources` initialization with typical config:
 1. **User describes study**: "I want to study diabetes patients..."
 
 2. **LLM generates ONLY**:
-   - `000-config.yaml` with `projectTables` definitions
+   - `000-control.yaml` with `projectTables` definitions
    - CSV code files (if needed)
    - Jupyter notebooks following extraction patterns
 
