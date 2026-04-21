@@ -143,6 +143,11 @@ class SharedMethodsMixin:
         
         description = getattr(self, 'label', '')
         writeTable(self.df, table_path, description, partitionBy, mode)
+        # In-memory df now matches Hive; clear the dirty flag so a later
+        # Extract.write_all() can skip this item. Attribute may be absent
+        # on non-ExtractItem users of this mixin — setattr avoids surprise.
+        if hasattr(self, '_dirty'):
+            self._dirty = False
         logger.info(f"Written to {table_path}")
     
     def to_csv(self, path: str = None):
