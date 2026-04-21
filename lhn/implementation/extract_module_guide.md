@@ -388,36 +388,70 @@ dictList iteration) depends on the remap it performs.
 
 Resources reads the YAML once at `__init__`. If you edit the YAML
 while a notebook is open, you have three options, in order of
-cost:
+cost.
 
-### 4.1 Quick: `reread_config_files()`
+**Critical gotcha (read before picking an option):**
+`reread_config_files()` and re-running Cell 7 both build a **new
+`Extract` object** with **new `ExtractItem` instances**. Every
+`ExtractItem.df` on the new `e` starts out `None` (lazy-reload from
+Hive on first `.df` access). Any in-memory work on the old `e.*` items
+that was never persisted is gone — the notebook's old `e` reference
+is rebound, the old object is garbage-collected. For items that *were*
+persisted (all the extract-method outputs; `_auto_write` runs
+automatically), this is harmless. For items where you did
+`e.foo.df = ...` without a subsequent `.write()` / `write_all()`,
+the change is dropped. If you're mid-notebook and want to keep those,
+call `e.write_all()` BEFORE the reread.
 
-If you only changed values (no new `projectTables` entries):
+### 4.1 Quick: `reread_config_files()` — values only
+
+If you only changed values on existing entries (retained_fields,
+labels, partitionBy, etc.) and added no new `projectTables` keys:
 
 ```python
 resource.reread_config_files()
-# existing e.<name> attributes may be stale — re-read any affected
-# one by touching .df (lazy-load from Hive).
+# resource.e is the new Extract. Notebook's bare `e` is still the old
+# one (Python names are references — reading the YAML doesn't rebind
+# identifiers in your cell namespace). Touch .df on any changed item
+# via resource.e.<name>.df to pick up new config, or move to 4.2.
 ```
 
-### 4.2 Structural: re-run Cell 7
+### 4.2 Structural: `reread_config_files()` + rebind locals
 
-If you added or renamed a `projectTables` entry, or changed any
-schema mapping:
+If you added a new `projectTables` entry (like `scdpatient_icd`) or
+renamed one, you need both the reread AND a re-bind of the notebook's
+`e`, `r`, `d` names:
 
 ```python
-# Re-execute Cell 7 (the Resources() constructor).
-os.chdir(project_path)
-resource = Resources(local_config='000-control.yaml', ...)
-# Then re-run Cell 8 to rebind r, e, d and surface schemas.
+# globals() — not locals() — is the more robust choice here. In a
+# Jupyter cell, globals() always points at the user namespace;
+# locals() usually does too but has IPython-version-dependent
+# edge cases. For the reread path we care about rebinding `e` to
+# the brand-new Extract object, so pick the one that always works.
+globals().update(resource.reread_config_files())
+print(r.report_str())   # sanity check, same as the setup cell
 ```
+
+After this, `e.<new_name>` resolves (new Extract is in scope) and
+existing `e.<old_name>.df` lazy-loads from Hive on next access.
+
+Why `globals()` for reread but `locals()` elsewhere? Every working
+notebook in this repo already uses `locals().update(...)` in the
+setup cell and it works — that's the established convention and we
+keep it. But the reread path has bitten users where `locals().update`
+silently doesn't rebind `e` in a live kernel (and the symptom is
+exactly "added `scdpatient_icd` to YAML, reread, `e.scdpatient_icd`
+still AttributeError"). `globals()` sidesteps that class of bug.
 
 ### 4.3 Nuclear: restart the kernel
 
-If anything in Resources' caching, the Hive metastore, or the
-Python module cache for `lhn`/`spark_config_mapper` is stale, just
-restart. You'll lose the SparkSession but that's usually the
-fastest fix.
+If the reread path seems to work but something feels stale — a
+module-level import was patched, the Hive metastore cache is
+confused, `r.report_str()` shows items you didn't expect — restart
+the kernel. You lose the SparkSession (a few seconds to rebuild)
+but you get a clean slate. This is also the simplest option if
+you're at the very top of a notebook and nothing in-memory is
+worth keeping.
 
 ---
 
@@ -644,3 +678,4 @@ in production pipelines. If something breaks, check these first.
 23. **`print_pd(obs=5)` is fine for sanity checks but wrong for code-list verification.** The whole point of calling `print_pd` after `dict2pyspark` / `load_csv_as_df` on a raw code-list item (`e.*Code`, `e.*_raw`) is to confirm every code made it through the YAML/CSV loader. A truncated top-5/bottom-5 view hides the exact failure mode you are looking for: a dropped, mistyped, or mis-typed entry. Always pass `obs=<len(codes)>` (or a safe upper bound like 500) when inspecting code lists. `print_pd` (both the `ExtractItem.print_pd` method and the `lhn.helpers.print_pd` free function) no longer imposes the pandas default `display.max_rows=60` truncation — every row up to `obs` renders — but you still have to pass a large enough `obs`.
 24. **`entityExtract(elementList, entitySource)` raises `ValueError` when `elementList.df` is not a DataFrame.** Previously the underlying `identify_target_records` merely logged `"elementExtract is not a DataFrame, returning as-is"` and returned the non-DataFrame unchanged. That return value was then assigned to `self.df` of the target, so the real failure surfaced three frames later as a misleading `AttributeError: 'NoneType' object has no attribute ...`. Worse, under different paths it could quietly produce wrong data (the left side of the "inner join" doesn't exist, so there's nothing to join against). The new error enumerates the four typical causes of a missing `elementList.df`: (a) forgot to call `create_extract()` on the verified-codes Item in this session, (b) `create_extract()` matched zero rows (check the regex or merge keys), (c) the Item is in `status='ITEM_FAILED'` (run `r.report_str()`), (d) no YAML `projectTables` entry for that name so `.location` is unset and lazy-load from Hive is a no-op. If this raises, DO NOT wrap it in a try/except — fix the upstream step. An inner join against a non-existent left side is nonsense and any result would be wrong data.
 25. **`e.write_all()` at the end of a notebook used to re-write every table, even ones already persisted by `_auto_write`.** Every extract method (`dict2pyspark`, `load_csv_as_df`, `create_extract`, `entityExtract`, `write_index_table`) already calls `_auto_write` after setting `self.df`, so the Hive table is already current. The pre-flag `write_all()` overwrote each of those a second time, identical bytes, identical cost. The `df` setter now sets a `_dirty` flag, and `_auto_write` / `write()` clear it; `write_all(skip_clean=True)` (the default) skips items whose flag is False. In a pipeline that sticks to the extract methods, `write_all()` is essentially a no-op — it just prints `"SKIPPED (already persisted)"` lines. It remains load-bearing for items whose `.df` you mutated directly (`e.foo.df = e.foo.df.withColumn(...)`) — that assignment re-marks the item dirty, so the closing `write_all` picks it up. Pass `skip_clean=False` to force-rewrite every table regardless (equivalent to the old behavior).
+26. **`resource.reread_config_files()` without `globals().update(...)` doesn't rebind your notebook's `e`.** The reread rebuilds `resource.e` in place (new `Extract` object, new `ExtractItem` instances for every `projectTables` entry including any you just added), BUT your notebook's `e` variable — bound once in the setup cell via `locals().update(resource.load_into_local())` — still references the OLD `Extract`. Python names are references, not aliases; updating `resource.e` doesn't touch any other binding. Symptom: you add `scdpatient_icd` to YAML, call `resource.reread_config_files()`, and `e.scdpatient_icd` still raises `AttributeError`, while `resource.e.scdpatient_icd` works fine. Fix: `globals().update(resource.reread_config_files())`. Use `globals()` here rather than `locals()` — `globals()` in a Jupyter cell is reliably the user namespace, `locals()` is usually but not always. Separately, the reread **discards any in-memory `.df` that wasn't persisted** — the new ExtractItems start with `.df = None` and lazy-load from Hive. Run `e.write_all()` before the reread if you have uncommitted mutations you want to keep; otherwise you lose them.
