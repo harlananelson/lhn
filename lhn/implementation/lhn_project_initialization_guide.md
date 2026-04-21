@@ -312,10 +312,12 @@ e.comorbidity_codes.load_csv_as_df()
 # Verify
 e.comorbidity_codes.attrition()
 
-# Use in extraction
+# Use in extraction — 1st positional is elementList, 2nd is entitySource.
+# Always pass r.*.df (the DataFrame), not r.* (the Item wrapper), so the
+# argument type is unambiguous at the call site.
 e.condition_encounters.entityExtract(
-    elementList=e.comorbidity_codes,
-    entitySource=r.conditionSource
+    e.comorbidity_codes,      # elementList
+    r.conditionSource.df,     # entitySource
 )
 ```
 
@@ -371,7 +373,7 @@ lab_codes:
 # Author: {author}
 # ============================================================================
 
-from lhn import Resources, Extract
+from lhn import Resources
 from spark_config_mapper.utils import writeTable
 from pyspark.sql import functions as F
 from pathlib import Path
@@ -385,11 +387,13 @@ resource = Resources(
     # finish_init=True                             # default; skips only if False
 )
 
+# Surfaces r (TableList[Item]), e (Extract), d (remapped to dictrwd
+# TableList), and schema name strings into this cell's locals namespace.
+# Pass everything=True to also include disease, schemaTag, dataLoc, etc.
 locals().update(resource.load_into_local())
-locals().update(local_vars)
 
-r = resource.r
-db = resource.db
+# Quick sanity check: fail loud if any Item silently failed to process.
+print(r.report_str())
 ```
 
 ### 5.3 Domain Extraction Pattern
@@ -437,7 +441,12 @@ e.{domain}_index.write_index_table(
 e.{domain}_index.attrition()
 
 # Verify
-e.{domain}_index.tabulate(by='{code_field}_standard_primaryDisplay', obs=20)
+e.{domain}_index.tabulate(
+    group_cols=['{code_field}_standard_primaryDisplay'],
+    count_distinct='personid',
+    limit=20,
+    show=True,
+)
 ```
 
 ### 5.4 CSV Loading Pattern
@@ -452,12 +461,12 @@ e.comorbidity_codes.load_csv_as_df()
 
 # Verify
 print(f"Loaded {e.comorbidity_codes.df.count()} codes")
-e.comorbidity_codes.tabulate(by='Category')
+e.comorbidity_codes.tabulate(group_cols=['Category'], show=True)
 
 # Use in extraction
 e.comorbidity_encounters.entityExtract(
-    elementList=e.comorbidity_codes,
-    entitySource=r.conditionSource,
+    e.comorbidity_codes,       # elementList
+    r.conditionSource.df,      # entitySource (DataFrame, not Item)
     cacheResult=True
 )
 ```
@@ -592,17 +601,19 @@ projectTables:
     label: "DM2 cohort patients"
     indexFields: ["personid", "tenant"]
 
-  dm2_codes:
-    label: "Type 2 Diabetes ICD-10 codes"
+  # Stage 1a: raw DM2 codes from inline YAML dict
+  dm2_raw:
+    label: "Type 2 Diabetes ICD-10 regex patterns"
     dictionary:
       dm2: "${search_string_dm2}"
     listIndex: "codes"
     sourceField: "conditioncode_standard_id"
-    complete: True
 
-  dm2_codes_verified:
+  # Stage 1b: verified DM2 codes (output of create_extract)
+  dm2_codes:
     label: "Verified DM2 codes"
-    groupName: "group"                       # library default; use 'regexgroup' only when disambiguating
+    groupName: "group"                       # library default
+    sourceField: "conditioncode_standard_id"
     indexFields:
       - "conditioncode_standard_primaryDisplay"
       - "conditioncode_standard_id"
@@ -734,7 +745,12 @@ e.dm2_index.df.select(
 ).show()
 
 # Condition distribution
-e.dm2_index.tabulate(by='conditioncode_standard_primaryDisplay', obs=20)
+e.dm2_index.tabulate(
+    group_cols=['conditioncode_standard_primaryDisplay'],
+    count_distinct='personid',
+    limit=20,
+    show=True,
+)
 ```
 
 ---

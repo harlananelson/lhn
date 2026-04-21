@@ -9,7 +9,7 @@
 # SCHEMA PROCESSING RULES
 # ----------------------------------------------------------------------------
 # Maps schema types to their processing parameters.
-# For each schema in a project's 000-config.yaml, the system finds the
+# For each schema in a project's 000-control.yaml, the system finds the
 # matching entry here to determine how to process it.
 
 callFunProcessDataTables:
@@ -17,34 +17,42 @@ callFunProcessDataTables:
   # Processing rule for RWD (Real World Data) schemas
   RWDcallFunc:
     data_type: 'RWDTables'           # Key in config-RWD.yaml containing table definitions
-    schema_type: 'RWDSchema'         # Matches key in 000-config.yaml schemas dict
-    type_key: 'rwd'                  # Attribute name for TableList (resource.rwd)
-    property_name: 'r'               # Attribute name for DB wrapper (resource.r)
-    updateDict: False                # If True, auto-discover tables from schema
+    schema_type: 'RWDSchema'         # Matches key in 000-control.yaml schemas dict
+    # type_key binds a TableList[Item] (.df-bearing tables);
+    # property_name binds a dict of ConfigObj (config metadata, no .df).
+    # load_into_local() remaps the property_name alias onto the TableList
+    # in caller locals so `<property_name>.<table>.df` works in notebooks.
+    type_key: 'r'                    # resource.r       → TableList[Item]
+    property_name: 'rwd'              # resource.rwd     → dict of ConfigObj
+    updateDict: False                 # If True, auto-discover tables from schema
 
   # Processing rule for project output schemas
   projectcallFunc:
-    data_type: 'projectTables'       # Key in 000-config.yaml containing output tables
-    schema_type: 'projectSchema'     # Matches key in 000-config.yaml schemas dict
-    type_key: 'proj'                 # Attribute name for TableList (resource.proj)
-    property_name: 'db'              # Attribute name for DB wrapper (resource.db)
+    data_type: 'projectTables'       # Key in 000-control.yaml containing output tables
+    schema_type: 'projectSchema'     # Matches key in 000-control.yaml schemas dict
+    type_key: 'proj'                 # resource.proj    → dict of ConfigObj
+                                     # (consumed internally to build resource.e = Extract)
+    property_name: 'db'              # resource.db      → not used in current lhn flow;
+                                     # user-facing is resource.e (auto-built in finish_init)
     updateDict: False
 
   # Processing rule for OMOP schemas (if using OMOP data model)
   OMOPcallFunc:
     data_type: 'OMOPTables'          # Key in config-OMOP.yaml
-    schema_type: 'omopSchema'        # Matches key in 000-config.yaml schemas dict
-    type_key: 'omop'                 # Attribute name for TableList
-    property_name: 'o'               # Attribute name for DB wrapper
+    schema_type: 'omopSchema'        # Matches key in 000-control.yaml schemas dict
+    type_key: 'o'                    # resource.o       → TableList[Item]
+    property_name: 'omop'            # resource.omop    → dict of ConfigObj
     updateDict: False
 
   # Processing rule for dictionary/reference schemas
-  dictcallFunc:
-    data_type: 'dictTables'          # Key in config containing dictionary tables
-    schema_type: 'dictrwdSchema'     # Matches key in 000-config.yaml schemas dict
-    type_key: 'dict'                 # Attribute name for TableList
-    property_name: 'd'               # Attribute name for DB wrapper
-    updateDict: False
+  dictrwdcallFunc:
+    data_type: null                  # auto-discovered from the schema (updateDict=True)
+    schema_type: 'dictrwdSchema'     # Matches key in 000-control.yaml schemas dict
+    type_key: 'dictrwd'              # resource.dictrwd → TableList[Item]
+    property_name: 'd'               # resource.d       → dict of ConfigObj
+                                     # (load_into_local remaps d → dictrwd in locals)
+    tableNameTemplate: '_rwd'         # suffix for discovered tables
+    updateDict: True                  # scan schema for tables
 
 # ----------------------------------------------------------------------------
 # CONFIGURATION FILE LOCATIONS

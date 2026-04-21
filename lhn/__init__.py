@@ -16,7 +16,7 @@ Usage:
     
     # Initialize with configuration files
     r = Resources(
-        local_config='000-config.yaml',
+        local_config='000-control.yaml',
         global_config='config-global.yaml',
         schemaTag_config='config-RWD.yaml'
     )
