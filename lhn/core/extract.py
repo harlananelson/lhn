@@ -429,6 +429,33 @@ class ExtractItem(SharedMethodsMixin):
         else:
             entity_df = entitySource
 
+        # Fail fast on a missing elementList DataFrame. Before this check
+        # existed, element_df=None silently flowed into identify_target_records,
+        # which logged a vague warning and returned None. That None was then
+        # assigned to self.df — producing downstream AttributeError three
+        # frames removed from the real cause. An entityExtract against a
+        # non-existent left side is nonsense; refuse to do it.
+        if not isinstance(element_df, DataFrame):
+            element_name = getattr(elementList, 'name', repr(elementList))
+            element_status = getattr(elementList, 'status', 'unknown')
+            target_name = getattr(self, 'name', 'unknown')
+            raise ValueError(
+                f"entityExtract on '{target_name}': elementList "
+                f"'{element_name}' has no DataFrame "
+                f"(elementList.df is {type(element_df).__name__}, "
+                f"status={element_status!r}). Likely causes:\n"
+                f"  * create_extract() was never called on "
+                f"'{element_name}' in this session\n"
+                f"  * create_extract() matched zero rows — check the "
+                f"regex / merge keys\n"
+                f"  * Item.status == 'ITEM_FAILED' — run "
+                f"r.report_str() to inspect\n"
+                f"  * No YAML projectTables entry for "
+                f"'{element_name}' — '.location' is unset and "
+                f"lazy-load from Hive is a no-op\n"
+                f"Fix the upstream step, then re-run this cell."
+            )
+
         # Cohort filtering (restored from v0.1.0)
         if cohort is not None:
             logger.info("entityExtract: Using cohort filter")
