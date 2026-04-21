@@ -419,6 +419,16 @@ locals().update(resource.load_into_local())
 print(r.report_str())
 ```
 
+**Do NOT precede `locals().update(...)` with `r = resource.r`,
+`e = resource.e`, `d = resource.d`.** Those assignments are
+redundant — `load_into_local()` already surfaces all three (plus
+every schema string and dictList TableList) into the cell's
+locals. And `d = resource.d` is actively wrong on its own: it
+binds the *config-object* dict, whereas `load_into_local()`
+remaps `d` onto `resource.dictrwd` (the TableList). The
+one-liner gives you the right names in the right shape; the
+pre-assignments only add noise and a footgun.
+
 ### 5.3 Domain Extraction Pattern
 
 ```python

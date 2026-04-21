@@ -361,20 +361,26 @@ resource = Resources(
     debug=True,
 )
 
-# Cell 8 — bind short names + surface schemas into locals
-r = resource.r         # source tables (RWD)
-e = resource.e         # project Extract (your outputs)
-d = resource.d         # config-object form; rebound below to TableList
-# Rebind d (and all schemas/dictLists) into this cell's locals so that
-# d.<table>.df works. load_into_local() also surfaces RWDSchema,
-# projectSchema, dataLoc, etc., as bare names.
+# Cell 8 — surface short names + schemas into locals
+# load_into_local() returns a dict containing r (TableList), e (Extract),
+# d (REMAPPED onto resource.dictrwd — a TableList, not the config-object
+# dict), plus RWDSchema, projectSchema, dataLoc, and every dictList
+# TableList. locals().update(...) binds them all as bare names.
 locals().update(resource.load_into_local())
+print(r.report_str())  # catches silent ITEM_FAILED from Hive misses
 ```
 
-**Do not remove the `locals().update(...)` line.** The line after
-it relies on the remap `d → resource.dictrwd`. Without it,
-`d.<table>.df` raises `AttributeError` because `resource.d` is the
-config-object dict, not the TableList.
+**Do not pre-assign `r = resource.r`, `e = resource.e`, `d = resource.d`.**
+Those assignments are redundant — `load_into_local()` surfaces `r`, `e`,
+`d`, and all schemas in one call. Worse, `d = resource.d` binds the
+*config-object* dict; only `load_into_local()` remaps `d` onto
+`resource.dictrwd` (the TableList) so that `d.<table>.df` works. If
+you pre-assign and then forget `locals().update(...)`, `d.<table>.df`
+raises `AttributeError`.
+
+**Do not remove the `locals().update(...)` line.** Everything
+downstream (dictionary-backed `create_extract`, schema references,
+dictList iteration) depends on the remap it performs.
 
 ---
 
@@ -620,3 +626,4 @@ in production pipelines. If something breaks, check these first.
 19. **`writeTable` partition silently skipped** when `partitionBy` is misspelled (`if partitionBy and partitionBy in df.columns`). No error, no partitioning. Inspect the resulting table's `DESCRIBE EXTENDED`.
 20. **`dataLoc` trailing slash matters.** `Item.csv = f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` has NO separator between `dataLoc` and `TBL`, so a missing `/` gives you paths like `.../SickleCell_AIscdpatient_SCD_RWD.csv`. Always end `dataLoc` with `/`.
 21. **Do not reassign `e.foo.csv` in the notebook.** Resources already sets it during `Item.__init__` to the default export path. If the input CSV is elsewhere, set `csv:` in YAML (not in a notebook cell). Two-source-of-truth CSV paths hide where the real load is coming from and drift silently between runs.
+22. **Do not pre-assign `r = resource.r`, `e = resource.e`, `d = resource.d` before `locals().update(resource.load_into_local())`.** Redundant at best — `load_into_local()` binds all three as bare names (plus every schema string and dictList TableList). Actively harmful at worst: `d = resource.d` binds the config-object dict; only `load_into_local()` remaps `d` onto `resource.dictrwd` (the TableList). If someone later deletes the `locals().update(...)` line thinking the pre-assignments cover it, `d.<table>.df` stops working silently. One line in, all names out.
