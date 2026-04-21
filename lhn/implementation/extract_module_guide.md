@@ -237,8 +237,15 @@ you can set on each item are grouped by which verb consumes them.
 
 | Key | Purpose |
 |---|---|
-| `csv` | Absolute path (or set via `e.foo.csv = ...` in the notebook). |
+| `csv` | Absolute path to the CSV. **Set in YAML, not in the notebook.** `Resources(...)` → `Item.__init__` auto-populates this to `f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` — the project's canonical CSV-export path. If your input CSV lives elsewhere (e.g., `${project_path}/control/Lab_Loinc_Codes.csv`), set `csv:` explicitly in the YAML item config, and use template variables like `${systemuser}` that Resources resolves at config-load time. |
 | `listIndex` | Column name for the code column in the CSV. |
+
+**Do not write `e.foo.csv = os.path.join(...)` in the notebook.** A
+common anti-pattern is to reassign `e.labsHgbCodes.csv = .../control/Lab_Loinc_Codes.csv`
+in the cell just before `load_csv_as_df()`. That bypasses the
+config-driven path the Resources constructor already set, creating a
+second source of truth that the reader has to chase. Put the path in
+YAML once; let the notebook trust the ExtractItem.
 
 **`create_extract` (verify code list against a dictionary):**
 
@@ -612,3 +619,4 @@ in production pipelines. If something breaks, check these first.
 18. **`ItemLoadError` raises only on first `.df` access.** After the first raise, `_df` is still `None` and subsequent `.df` access returns `None` because the `status == ITEM_FAILED` check fires before load retry. Don't rely on a second access to recover.
 19. **`writeTable` partition silently skipped** when `partitionBy` is misspelled (`if partitionBy and partitionBy in df.columns`). No error, no partitioning. Inspect the resulting table's `DESCRIBE EXTENDED`.
 20. **`dataLoc` trailing slash matters.** `Item.csv = f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` has NO separator between `dataLoc` and `TBL`, so a missing `/` gives you paths like `.../SickleCell_AIscdpatient_SCD_RWD.csv`. Always end `dataLoc` with `/`.
+21. **Do not reassign `e.foo.csv` in the notebook.** Resources already sets it during `Item.__init__` to the default export path. If the input CSV is elsewhere, set `csv:` in YAML (not in a notebook cell). Two-source-of-truth CSV paths hide where the real load is coming from and drift silently between runs.
