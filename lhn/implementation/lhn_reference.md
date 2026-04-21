@@ -334,7 +334,10 @@ df = group_races(
     column_name='race',
     result_column_name='race_group'
 )
-# Returns: 'Black', 'White', 'Asian', 'Indigenous', 'Hispanic', 'Mixed', 'Unknown', 'Other'
+# Returns one of: 'Black', 'Indigenous', 'Asian', 'White',
+#                 'Middle Eastern', 'Caribbean', 'Hispanic',
+#                 'Mixed', 'Other/Unknown'
+# (see lhn/cohort/demographics.py:46-72 for the exact input-value mapping)
 ```
 
 ### 8.2 Ethnicity Grouping
@@ -398,16 +401,35 @@ e.cohort.attrition()
 
 ### 9.3 tabulate()
 
-Aggregate and display counts by field:
+Aggregate and display counts by one or more columns.
+
+**Actual signature** (`shared_methods.py:261`):
+
+```python
+tabulate(
+    group_cols=None,        # list[str] — columns to group by
+    count_distinct=None,    # column to count distinct values of
+    order_by='count',       # 'count' | 'group_cols' — sort order
+    limit=50,               # max rows to return
+    dropna=False,           # drop groups with null in any group_col
+    show=False,             # print to notebook output
+)
+```
+
+Example — top 20 condition codes by distinct patient count:
 
 ```python
 e.condition_index.tabulate(
-    by='conditioncode_standard_primaryDisplay',
-    index=['personid'],
-    obs=20                           # Top 20 values
+    group_cols=['conditioncode_standard_primaryDisplay'],
+    count_distinct='personid',
+    limit=20,
+    show=True,
 )
-# Output: Top 20 condition codes by patient count
 ```
+
+Note: the parameters `by=`, `index=`, `obs=` do NOT exist; an older
+version of this document invented them. If you see a call like
+`.tabulate(by='...', obs=N)` in a notebook, fix it to the above.
 
 ### 9.4 count_people()
 
@@ -556,20 +578,106 @@ cohort = e.dm2_index.df.select('personid', 'tenant').distinct()
 writeTable(cohort, e.persontenant.location, description='Study cohort')
 
 # Step 5: Verify
-e.persontenant.tabulate(by='tenant')
+e.persontenant.tabulate(group_cols=['tenant'], show=True)
 ```
 
 ---
 
-## 12. ERROR HANDLING
+## 12. ERROR HANDLING AND SILENT FAILURE MODES
+
+### 12.1 Item.status lifecycle
+
+Every `Item` has a lifecycle `status` attribute that callers should
+check before trusting `item.df`. Five constants (defined in
+`spark_config_mapper/schema/mapper.py`):
+
+| Status | Meaning |
+|---|---|
+| `ITEM_UNLOADED` | Declared in config but no DataFrame loaded yet. Lazy-load triggers on first `.df` access. |
+| `ITEM_LOADED` | DataFrame read from Hive or assigned by a caller; not yet processed. |
+| `ITEM_PROCESSED` | `Item.process()` completed successfully (inputRegex filter, insert directives, colsRename applied). This is the only state where `item.df` is guaranteed to be the fully-processed frame. |
+| `ITEM_FAILED` | `Item.process()` raised in lenient mode (the default) or strict mode. `item.df` points at the raw pre-processing DataFrame, NOT the processed one. No exception surfaces unless `strict=True`. |
+| `ITEM_NOT_FOUND` | The physical table doesn't exist in the configured schema. |
+
+**Critical silent-failure mode:** when flatten fails under the default
+lenient `processDataTables(..., strict=False)`, `item.status` becomes
+`ITEM_FAILED` and `item.df` quietly returns the unflattened raw frame.
+Code that does `r.foo.df.select('personid')` can fail three frames
+later with a nonsensical `AttributeError` instead of surfacing the
+real cause.
+
+**Always run the report after `Resources(...)` init:**
+
+```python
+print(r.report_str())                   # summary of every Item's status
+assert all(item.status == 'PROCESSED' for item in r.values())
+```
+
+For new pipelines and CI, prefer `strict=True` at both the config
+load step and the table processing step:
+
+```python
+validate_tables_config(cfg['RWDTables'], strict=True)   # typo catcher
+r = processDataTables(cfg['RWDTables'], strict=True, ...)
+```
+
+### 12.2 What `Item.process()` actually interprets
+
+Of all the keys you can put under a table entry in YAML, `Item.process()`
+reads exactly three:
+
+| Key | Type | Effect |
+|---|---|---|
+| `inputRegex` | list[str] | After `flattenTable` produces underscore-joined column names, only columns whose flat name matches one of these regexes are retained. Matches via `re.search`, case-insensitive. |
+| `insert` | list[str] | Each string is `eval(f"df.{insert_code}")` — arbitrary Python in your caller's scope. Used for computed columns. **Security warning:** never load YAML from untrusted sources. |
+| `colsRename` | dict[str, str] | Applied after inputRegex/insert to rename columns. |
+
+**Every other key in the YAML entry** (`label`, `indexFields`,
+`retained_fields`, `datefield`, `histStart`, `histEnd`, `partitionBy`,
+`cohortColumns`, `code`, `sort_fields`, `max_gap`, `dictionary`,
+`sourceField`, `listIndex`, `find_method`, `groupName`, `complete`,
+`inputs`, `description`, …) is stored on the Item via `setattr` and
+read by *other methods* (`create_extract`, `entityExtract`,
+`write_index_table`, `load_csv_as_df`). If you edit one of these and
+the call doesn't change, the key is either consumed by a method you
+aren't calling or read nowhere in the codebase.
+
+### 12.3 `inputRegex` gotchas
+
+- **Patterns match the underscore-flattened name**, not the dotted
+  source path. `^encounter\.id$` matches nothing; use `^encounter_id$`.
+- **Matching is case-insensitive** via `re.search`.
+- **No pattern → no columns.** Missing `inputRegex` in a table config
+  produces an empty `select_cols` list and the processed frame has
+  only the join keys.
+- **Misspelled patterns produce silent empty selects** — no error
+  surfaces; `status` stays `ITEM_PROCESSED`. Check
+  `len(item.df.columns)` against your expectation.
+
+### 12.4 Multi-array tables silently drop arrays
+
+`Item.process()` calls `flattenTable(..., error_on_multiple_arrays=False)`
+by default. A source table with multiple array columns has its arrays
+dropped and only a `debug`-level log record emits. The resulting frame
+is marked `ITEM_PROCESSED` — there's no status-level signal.
+
+If your source has multiple arrays:
+- Specify `explode_array: <name>` in the table's YAML to pick which
+  one to explode, **or**
+- Pass `strict=True` to `processDataTables` so the drop becomes an
+  error.
+
+### 12.5 Common errors
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `AttributeError: 'Resources' has no attribute 'rwd'` | Schema not found or not processed | Check schema exists, ensure the schema exists and `finish_init=True` (the default) is in effect |
-| `KeyError: 'projectTables'` | Config not loaded | Verify config file path and structure |
-| `Empty DataFrame` | No matching records | Check date ranges, code patterns, schema |
-| `Table not found` | Output table doesn't exist yet | Run extraction workflow first |
-| `No matching codes` | Regex pattern issue | Test pattern against actual data |
+| `AttributeError: 'Resources' has no attribute 'rwd'` | Schema not found or `finish_init=False` was passed | Ensure the schema exists and `finish_init=True` (the default) is in effect |
+| `AttributeError` on `d.<table>.df` | `d` is bound to `resource.d` (config dict), not the TableList | Run `locals().update(resource.load_into_local())` after Resources init |
+| `KeyError: 'projectTables'` | Config not loaded (typo in local_config filename, or wrong project_path) | Verify config file path; check `resource.config.get('projectTables', {})` |
+| `Empty DataFrame` | Regex matches nothing, wrong source (patient-level `r.*` vs dictionary `d.*`), or inputRegex flattened-name mismatch | Check `r.report_str()`, verify actual column names with `item.df.columns`, confirm source table |
+| `TypeError: entityExtract() missing 1 required positional argument: 'elementList'` | Called entityExtract with kwargs only, missing the first positional arg | Pass elementList as first positional (signature was changed in lhn commit c745401) |
+| Hung query, never completes | `elementListSource=r.*.df` instead of `d.*.df` | Use dictionary table as elementListSource; scanning patient-level data with N regex patterns is O(N × rows) |
+| `ItemLoadError` on second `.df` access only | First access raised, `_df` still None, `status=ITEM_FAILED` | Inspect `item.load_error`; re-derive the table from source |
 
 ---
 
