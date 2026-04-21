@@ -122,10 +122,12 @@ def _resolve_surging_dates(surging_dates):
 
 
 def plotByTime(df, datefield='date', xlab='', ylab='', title='',
-               date_low='2019-01-01', surging_dates='COVID-19', count=None,
+               date_low='2019-01-01', surging_dates='COVID-19',
+               count_col=None,
                date_break="2 year", date_high=None, annotate_offset=10,
                useLog=True, grouping=None, plot_proportions=False,
-               time_group='day', plot_lib='plotnine', geom_line=False):
+               time_group='day', plot_lib='plotnine', geom_line=False,
+               count=None):   # deprecated alias; shadows module-level count()
     """Scatter plot of counts over time with COVID surge annotations.
 
     Handles both Spark and pandas DataFrames. Supports day/week/month/year
@@ -140,7 +142,10 @@ def plotByTime(df, datefield='date', xlab='', ylab='', title='',
         title (str): Plot title
         date_low (str): Lower date limit (YYYY-MM-DD)
         surging_dates: 'COVID-19', 'COVID-19 Vaccine', list of dates, or None
-        count (str): Pre-computed count column (if None, counts are computed)
+        count_col (str): Pre-computed count column (if None, counts are computed).
+            Renamed from `count=` (which shadowed the module-level count()
+            function); `count=` is still accepted for backward compatibility
+            but should be migrated.
         date_break (str): X-axis date break interval (e.g., '2 year')
         date_high (str): Upper date limit (None = today)
         annotate_offset (int): Y position for surge date annotations
@@ -154,6 +159,10 @@ def plotByTime(df, datefield='date', xlab='', ylab='', title='',
     Returns:
         plotnine ggplot or plotly Figure
     """
+    # Back-compat: accept the old `count=` kwarg.
+    if count is not None and count_col is None:
+        count_col = count
+    count = count_col   # keep body below unchanged
     if time_group not in ['day', 'week', 'month', 'year']:
         logger.error(
             f"Invalid time_group '{time_group}'. "

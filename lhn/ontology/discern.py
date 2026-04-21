@@ -234,7 +234,10 @@ def summarizeCodes(inSchema, inTable, index, codefield, datefields, explode_fiel
         codingsystemsnotmatchedPd, schema = codingSystemId.schema)
     
     
-    updateTable(inTable, codefield, f'{codingsystemsnotmatched}', codingsystemsnotmatched
+    # The third positional arg is the Hive table name (literal string).
+    # Interpolating the DataFrame via f'{codingsystemsnotmatched}' would
+    # stringify a DataFrame repr — not a table name. Use the literal.
+    updateTable(inTable, codefield, 'codingsystemsnotmatched', codingsystemsnotmatched
                     , transform       = transform_codingsystemsnotmatched
                     , convertToPandas = False
                     , tabulated_ontologies = tabulated_ontologies)
@@ -812,9 +815,9 @@ def extractConcepts(concept, description, tabulated_ontologies = ''):
     .withColumn('conceptCodeList',F.collect_list('systemCode').over(w1))
     .select(['contextVersion', 'conceptName', 'conceptCodeList'])
     .groupBy(['contextVersion', 'conceptName'])
-    .agg(max('conceptCodeList').alias('conceptCodeList'))
+    .agg(F.max('conceptCodeList').alias('conceptCodeList'))   # F.max, not Python max
     .select(['contextVersion', 'conceptName', 'conceptCodeList'])
-    .withColumn('rank', F.row_number().over(w2)) 
+    .withColumn('rank', F.row_number().over(w2))
     .filter(F.col('rank') == 1)
     .withColumn("conceptCodeSystem", F.explode(F.col('conceptCodeList')))
     .withColumn("conceptCode", F.col("conceptCodeSystem")[0])
@@ -866,12 +869,12 @@ def calContextGroups(concept, tabulated_ontologies = ''):
      .withColumn('conceptCodeList',F.collect_list('systemCode').over(w1))
      .select(['contextVersion', 'conceptName', 'conceptCodeList'])
      .groupBy(['contextVersion', 'conceptName'])
-     .agg(max('conceptCodeList').alias('conceptCodeList'))
+     .agg(F.max('conceptCodeList').alias('conceptCodeList'))     # F.max, not Python max
      .withColumn('sizeCodeList', F.size(F.col('conceptCodeList')))
      .select(['contextVersion', 'conceptName', 'conceptCodeList', 'sizeCodeList'])
-     .withColumn('row_number', F.row_number().over(w2)) 
+     .withColumn('row_number', F.row_number().over(w2))
      .withColumn('referenceContext', (F.col('row_number') == 1).cast('integer'))
-     .withColumn('contextGroup', sum(F.col('referenceContext')).over(w3))
+     .withColumn('contextGroup', F.sum(F.col('referenceContext')).over(w3))   # F.sum, not Python sum
      #.filter(F.col('contextVersion') == '0054')
      .sort(['conceptName', 'contextGroup', 'contextVersion', 'referenceContext'])
      .select(['contextVersion','conceptName',  'contextGroup', 'referenceContext'])
@@ -1043,7 +1046,11 @@ def check_sample_and_ontology(inTable, table_sample, datefield
     )
     print(r)
     
-    if database_exists(db=f'{tabulated_ontologies}', table=ontology):
+    # database_exists takes a single positional database_name argument
+    # (no `db=` / `table=` kwargs). Check the database first; if the
+    # specific ontology table is missing, the SHOW TABLES / sql below
+    # will surface the gap.
+    if database_exists(tabulated_ontologies):
         r = (spark.sql(f"""
         SELECT DISTINCT contextId, contextName, conceptName, table, code, n, count, percent
         FROM {tabulated_ontologies}.{ontology}
@@ -1101,7 +1108,7 @@ def get_ontology_codes(ontology, name_regex, inTable, code
         ontology
         .filter(F.col('conceptName').rlike(name_regex))
         .filter(F.col('table') == inTable)
-        .filter(F.column('code').isin( code))
+        .filter(F.col('code').isin(code))   # F.column is not a thing — use F.col
     )
     # Identify the context with the most levels of context
     # The ontology API only takes on context, so make it the most populated one
