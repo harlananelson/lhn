@@ -60,46 +60,88 @@ lhn/
 
 ## 4. CLASS RELATIONSHIPS
 
+`r`, `rwd`, `dictrwd`, `proj` etc. are all `TableList[Item]` — the same
+type. The naming on `Resources` comes from the `type_key` /
+`property_name` pair declared under `callFunProcessDataTables` in the
+YAML. `DB` is a separate single-table wrapper (`db.py`) — it is NOT
+what `resource.r` is.
+
 ```
 Resources (orchestrator)
-├── Configuration (from spark_config_mapper):
-│   ├── self.config_dict        : Merged configuration
-│   └── self.config_table_locations : Config file paths
+├── Configuration:
+│   ├── self.config            : Merged YAML from local/global/schemaTag
+│   ├── self.projectSchema     : Hive schema where Extract writes
+│   ├── self.RWDSchema, etc.   : Source/dictionary schema names
+│   └── self._original_paths   : Config file paths
 │
-├── Per-Schema Attributes:
-│   ├── self.rwd                : TableList[Item] - source tables
-│   ├── self.r                  : DB - DataFrame access to rwd
-│   ├── self.proj               : TableList[Item] - project tables
-│   └── self.db                 : DB - DataFrame access to proj
+├── Per-schema TableLists (type_key bindings from callFunProcessDataTables):
+│   ├── self.r                 : TableList[Item] — RWD source tables
+│   ├── self.rwd               : dict of ConfigObj (property_name variant)
+│   ├── self.dictrwd           : TableList[Item] — dictionary tables
+│   ├── self.d                 : dict of ConfigObj (property_name for dictrwd)
+│   └── self.proj              : dict of ConfigObj used to build Extract
 │
-└── Extraction:
-    └── Extract(resource.proj)  : Container of ExtractItem objects
+├── Extract (project outputs):
+│   └── self.e                 : Extract — built from self.proj during finish_init
+│
+└── Helpers:
+    ├── load_into_local(everything=False, load_schemas=True)
+    │                          : returns dict that remaps `d → dictrwd`,
+    │                            plus RWDSchema/projectSchema/dataLoc etc.
+    ├── reread_config_files()  : re-read YAML without rebuilding tables
+    └── list_tables()          : names of configured source tables
 
-Extract
-├── Created from TableList of project tables
-├── Contains ExtractItem for each table in config
-└── Access: e.table_name returns ExtractItem
+TableList[Item]
+├── Iterable by name: `for name in r: ...`
+├── Dict-style access: `r['conditionSource']` (same as attr access)
+├── Attr-style access: `r.conditionSource`
+└── Each member is an Item with .df, .location, .status, etc.
 
-ExtractItem (extends Item)
-├── Inherited: df, location, existsDF, csv, parquet
-├── Additional: create_extract(), entityExtract(), load_csv_as_df()
-└── Workflow methods for three-step extraction
+Item (spark_config_mapper)
+├── .df            : Spark DataFrame (lazy-loaded from .location)
+├── .location      : "{schema}.{name}" Hive table path
+├── .status        : UNLOADED | LOADED | PROCESSED | FAILED | NOT_FOUND
+├── .load_error    : exception string if status == FAILED during load
+├── .process_error : exception string if status == FAILED during process
+├── .process(strict=False) : apply inputRegex + insert + colsRename
+├── All YAML keys attached as attributes (label, indexFields,
+│                   retained_fields, datefield, partitionBy, ...)
+└── Inherits SharedMethodsMixin
 
-SharedMethodsMixin (inherited by Item, ExtractItem, DB)
-├── showIU(obs, tenant, sortfield) - display sample (tenant-filtered)
-├── attrition(person_id, date_field) - patient/record counts
-├── show(n, truncate) - basic DataFrame display
-├── toPandas(limit) - convert to pandas
-├── count() - row count
-├── write(outTable, mode) - write to Spark table
-├── to_csv(path) - export to CSV
-├── to_parquet(path) - export to Parquet
-├── load(table_path) - load DataFrame from table
-├── filter(condition) - filter rows
-├── select(*cols) - select columns
-├── join(other, on, how) - join DataFrames
-├── cache() / unpersist() - memory management
-└── properties() / values() - introspection
+Extract (lhn.core.extract)
+├── One attribute per entry in projectTables → ExtractItem
+├── .properties()   : list of ExtractItem names
+├── .__iter__       : iterate names
+├── .__getitem__    : e['name-with-hyphens'] for non-identifier names
+├── .__len__        : number of ExtractItems
+└── .write_all(names=None, skip_empty=True, verbose=True)
+                    : persist every (or specified) ExtractItem via .write()
+
+ExtractItem (extends Item via SharedMethodsMixin + extraction verbs)
+├── Inherited: df, location, status, all YAML attrs, SharedMethodsMixin
+└── Verbs (all auto-write to .location on success):
+    ├── dict2pyspark(columnname='codes')   — build from YAML dict
+    ├── load_csv_as_df()                   — build from a CSV
+    ├── create_extract(elementList, elementListSource, find_method, sourceField)
+    ├── entityExtract(elementList, entitySource, elementIndex=None, ...)
+    └── write_index_table(inTable, histStart=None, histEnd=None, ...)
+
+DB (spark_config_mapper/core/db.py)
+└── Single-table wrapper. Rarely used directly in notebook code.
+    NOT what self.r is. Accessed explicitly when needed.
+
+SharedMethodsMixin (inherited by Item and ExtractItem)
+├── showIU(obs, tenant, sortfield)       — tenant-filtered sample
+├── attrition(person_id, date_field)     — patient/record counts
+├── tabulate(group_cols, count_distinct, order_by, limit, dropna, show)
+├── print_pd(label='', sortfield='Subjects', obs=5, sort_order='desc')
+├── toPandas(limit)
+├── count()
+├── write(outTable=None, mode='overwrite')
+├── to_csv(path) / to_parquet(path)
+├── filter / select / join / cache / unpersist — MUTATE self.df IN PLACE
+├── properties()  — dict of YAML keys + runtime attrs (status, load_error, …)
+└── values()      — pprint self.__dict__
 ```
 
 ---
@@ -653,6 +695,44 @@ aren't calling or read nowhere in the codebase.
 - **Misspelled patterns produce silent empty selects** — no error
   surfaces; `status` stays `ITEM_PROCESSED`. Check
   `len(item.df.columns)` against your expectation.
+
+**Worked example.** A Cerner source schema has this nested structure:
+
+```
+encounter (struct)
+  .id (string)
+  .type (struct)
+    .standard (struct)
+      .primaryDisplay (string)
+```
+
+After `flattenTable` runs, the flat leaf names are
+`encounter_id`, `encounter_type_standard_primaryDisplay`, etc.
+(dots → underscores). So the correct `inputRegex`:
+
+```yaml
+encounterSource:
+  source: encounter
+  inputRegex:
+    - ^personid$
+    - ^encounter_id$
+    - ^encounter_type_standard_primaryDisplay$
+```
+
+NOT:
+
+```yaml
+encounterSource:
+  source: encounter
+  inputRegex:
+    - ^encounter\.id$                           # matches nothing
+    - ^encounter\.type\.standard\.primaryDisplay$   # matches nothing
+```
+
+The dotted-path form will silently produce an Item with only
+`personid`, no error, and `status == ITEM_PROCESSED`. You find out
+three frames later when `item.df.select('encounter_id')` raises
+`AnalysisException`.
 
 ### 12.4 Multi-array tables silently drop arrays
 

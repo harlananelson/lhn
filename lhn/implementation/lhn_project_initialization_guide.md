@@ -169,6 +169,10 @@ For clinician-verified codes:
 comorbidity_codes:
   label: "Comorbidity codes from clinical review"
   # CSV path auto-generated: {dataLoc}{table_key}_{disease}_{schemaTag}.csv
+  # NOTE: dataLoc MUST end with '/'. There is no separator injected
+  # between dataLoc and table_key, so `dataLoc: ".../extdata/Study"`
+  # produces paths like ".../extdata/Studycomorbidity_codes_...csv".
+  # Always configure dataLoc with a trailing slash.
   indexFields:
     - "conditioncode_standard_id"
     - "Category"
@@ -184,12 +188,18 @@ Diabetes,E11.65,"Type 2 diabetes with hyperglycemia"
 
 ### 3.4 Verified Codes Table
 
-Output of create_extract:
+Output of `create_extract`:
 
 ```yaml
 target_codes_verified:
   label: "Verified target codes"
-  groupName: "regexgroup"
+  # groupName is the column name used to label which pattern matched.
+  # Default (from the library) is 'group'. Use 'group' to match the
+  # convention in lhn's _extract_by_regex unless you have a specific
+  # reason (for example, the source table already has a column called
+  # 'group' and you need to disambiguate; then set groupName to
+  # something like 'regexgroup').
+  groupName: "group"
   indexFields:
     - "conditioncode_standard_primaryDisplay"
     - "conditioncode_standard_id"
@@ -592,7 +602,7 @@ projectTables:
 
   dm2_codes_verified:
     label: "Verified DM2 codes"
-    groupName: "regexgroup"
+    groupName: "group"                       # library default; use 'regexgroup' only when disambiguating
     indexFields:
       - "conditioncode_standard_primaryDisplay"
       - "conditioncode_standard_id"
