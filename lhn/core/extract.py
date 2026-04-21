@@ -70,7 +70,8 @@ class Extract:
     def __contains__(self, name):
         return name in self.__dict__ and not name.startswith('_')
 
-    def write_all(self, names=None, skip_empty=True, verbose=True):
+    def write_all(self, names=None, skip_empty=True, skip_clean=True,
+                  verbose=True):
         """
         Write extract tables to the project schema in one call.
 
@@ -81,11 +82,26 @@ class Extract:
                 if item is not None and item.df is not None:
                     item.write()
 
+        By default this only writes items whose in-memory ``df`` differs
+        from what was last persisted. Every extract method
+        (``create_extract``, ``entityExtract``, ``write_index_table``,
+        ``dict2pyspark``, ``load_csv_as_df``) already calls
+        ``_auto_write`` internally, so their outputs are skipped here —
+        re-writing them would be identical bytes and cost the same as
+        the first write. Items that had ``.df`` mutated directly
+        (``e.foo.df = e.foo.df.withColumn(...)``) are still written,
+        because the ``df`` setter marks them dirty. Pass
+        ``skip_clean=False`` to force-rewrite everything.
+
         Parameters:
             names (list|None): Subset of table names to write. If None, writes all
                 properties (i.e. every ExtractItem attached to this Extract).
             skip_empty (bool): If True (default), silently skip items whose ``df`` is
                 None. If False, call ``write()`` anyway and let it raise.
+            skip_clean (bool): If True (default), skip items whose dirty
+                flag is False — their disk copy already matches the
+                in-memory df. Set False to force a re-write of every
+                selected item.
             verbose (bool): If True (default), print one line per table with row count
                 and destination location.
 
@@ -104,6 +120,17 @@ class Extract:
             if skip_empty and (getattr(item, 'df', None) is None):
                 if verbose:
                     print(f"  {name}: SKIPPED (no data)")
+                results[name] = None
+                continue
+            # Default True when the attribute is missing — a conservative
+            # choice that preserves the pre-dirty-flag "always write"
+            # behavior for any legacy item that didn't pass through
+            # __init__.
+            is_dirty = getattr(item, '_dirty', True)
+            if skip_clean and not is_dirty:
+                if verbose:
+                    location = getattr(item, 'location', '?')
+                    print(f"  {name}: SKIPPED (already persisted -> {location})")
                 results[name] = None
                 continue
             item.write()
@@ -152,7 +179,12 @@ class ExtractItem(SharedMethodsMixin):
             self.partitionBy = None
         if 'df' not in self.__dict__:
             self._df = None
-        
+        # Dirty-tracking flag for write_all to skip items whose in-memory
+        # df already matches Hive. Set True by the df setter on any
+        # assignment; cleared by _auto_write / write after a successful
+        # persist. A freshly constructed Item has nothing to write.
+        self._dirty = False
+
         if debug:
             if hasattr(self, 'csv'):
                 logger.info(f"ExtractItem {getattr(self, 'name', 'unknown')}: csv={self.csv}")
@@ -180,10 +212,16 @@ class ExtractItem(SharedMethodsMixin):
         ``write_index_table``, ``dict2pyspark``) which auto-write after
         setting ``self.df``.
 
+        Marks the item dirty. :meth:`Extract.write_all` uses the dirty flag
+        to skip items whose in-memory df already matches Hive (i.e. were
+        already persisted by an extract method's auto-write and haven't
+        been mutated since).
+
         Parameters:
             value (pyspark.sql.DataFrame): DataFrame to store on this item.
         """
         self._df = value
+        self._dirty = True
 
     def _auto_write(self):
         """Write self.df to Hive if location and label are configured.
@@ -215,6 +253,8 @@ class ExtractItem(SharedMethodsMixin):
                            description=self.label, partitionBy=partition)
 
                 self._df = spark.table(self.location)
+                # In-memory df now matches Hive; subsequent write_all can skip.
+                self._dirty = False
                 logger.info(f"Auto-wrote {self.location}")
             except Exception as ex:
                 logger.warning(f"Auto-write failed for {self.location}: {ex}")
@@ -522,7 +562,10 @@ class ExtractItem(SharedMethodsMixin):
                 self.df, self.location,
                 description=description, partitionBy=partition
             )
-            self.df = spark.table(self.location)
+            # Direct _df assignment (not self.df = ...) so the setter
+            # doesn't re-mark the item dirty after we just persisted it.
+            self._df = spark.table(self.location)
+            self._dirty = False
 
     def create_extract(self, elementList=None, elementListSource=None,
                        find_method=None, sourceField=None):
