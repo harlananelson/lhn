@@ -556,7 +556,11 @@ projectTables:
 
 # ---- Stage 1 ----
 e.mycodes.dict2pyspark()
-e.mycodes.print_pd(label='Disease codes')
+# Pass obs large enough to cover the full code list. Default obs=5 is
+# fine for quick sanity checks, but for code-list verification you need
+# to *see every code* -- a dropped or mistyped entry in the YAML / CSV
+# will silently shrink the extract later. See §7 item 23.
+e.mycodes.print_pd(label='Disease codes', obs=500)
 
 # ---- Stage 2 ----
 e.mycodesVerified.create_extract(
@@ -565,7 +569,9 @@ e.mycodesVerified.create_extract(
     find_method='regex',
     sourceField='conditioncode_standard_id',
 )
-e.mycodesVerified.print_pd(label='Verified disease codes')
+# Same rule: print all verified rows, not just the top 5, so you can
+# confirm every raw code matched at least one dictionary entry.
+e.mycodesVerified.print_pd(label='Verified disease codes', obs=500)
 e.mycodesVerified.attrition()
 
 # ---- Stage 3 ----
@@ -627,3 +633,4 @@ in production pipelines. If something breaks, check these first.
 20. **`dataLoc` trailing slash matters.** `Item.csv = f"{dataLoc}{TBL}_{disease}_{schemaTag}.csv"` has NO separator between `dataLoc` and `TBL`, so a missing `/` gives you paths like `.../SickleCell_AIscdpatient_SCD_RWD.csv`. Always end `dataLoc` with `/`.
 21. **Do not reassign `e.foo.csv` in the notebook.** Resources already sets it during `Item.__init__` to the default export path. If the input CSV is elsewhere, set `csv:` in YAML (not in a notebook cell). Two-source-of-truth CSV paths hide where the real load is coming from and drift silently between runs.
 22. **Do not pre-assign `r = resource.r`, `e = resource.e`, `d = resource.d` before `locals().update(resource.load_into_local())`.** Redundant at best — `load_into_local()` binds all three as bare names (plus every schema string and dictList TableList). Actively harmful at worst: `d = resource.d` binds the config-object dict; only `load_into_local()` remaps `d` onto `resource.dictrwd` (the TableList). If someone later deletes the `locals().update(...)` line thinking the pre-assignments cover it, `d.<table>.df` stops working silently. One line in, all names out.
+23. **`print_pd(obs=5)` is fine for sanity checks but wrong for code-list verification.** The whole point of calling `print_pd` after `dict2pyspark` / `load_csv_as_df` on a raw code-list item (`e.*Code`, `e.*_raw`) is to confirm every code made it through the YAML/CSV loader. A truncated top-5/bottom-5 view hides the exact failure mode you are looking for: a dropped, mistyped, or mis-typed entry. Always pass `obs=<len(codes)>` (or a safe upper bound like 500) when inspecting code lists. `print_pd` (both the `ExtractItem.print_pd` method and the `lhn.helpers.print_pd` free function) no longer imposes the pandas default `display.max_rows=60` truncation — every row up to `obs` renders — but you still have to pass a large enough `obs`.
