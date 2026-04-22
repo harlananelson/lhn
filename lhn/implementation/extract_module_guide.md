@@ -266,7 +266,7 @@ is `projectTables.foo_Codes.listIndex` in YAML and `<sourceField>` is
 | Other key | Purpose |
 |---|---|
 | `find_method` | `'regex'` (scan `sourceField` with regex patterns) or `'merge'` (exact-value join on `listIndex`). Default `'regex'`. |
-| `groupName` | Column in the elementList that labels which regex matched. Defaults to `'group'`. |
+| `groupName` | Column in the INPUT elementList that supplies the label values for each matched pattern. Defaults to `'group'`. **Asymmetric:** the OUTPUT column is ALWAYS literally named `'group'` regardless of what `groupName` is set to. If your input code list has a `Condition` column and YAML sets `groupName: "Condition"`, create_extract reads label values from the input `Condition` column but writes them to an output column called `'group'`. Downstream code that references `.df.Condition` will fail with column-not-found. Rename at the consumer if you want a more logical name. |
 | `retained_fields` | Output columns to keep (plus always-keep join keys + `'group'`). |
 | `indexFields` | Treated as the natural join keys of the verified-codes table (used as `entityExtract`'s default `elementIndex`). |
 
