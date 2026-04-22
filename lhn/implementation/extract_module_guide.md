@@ -249,13 +249,60 @@ YAML once; let the notebook trust the ExtractItem.
 
 **`create_extract` (verify code list against a dictionary):**
 
-| Key | Purpose |
+Regex extraction reads from TWO different objects, with TWO different
+YAML fields naming the columns:
+
+| YAML key | Lives on | Names a column on | Holds |
+|---|---|---|---|
+| `listIndex` | the **input code list** item (elementList) | `elementList.df` | the regex PATTERNS |
+| `sourceField` | the **output `*_Verified` item** (receiver, `self`) | `elementListSource.df` | the TEXT the patterns are scanned against |
+
+Example: `e.foo_Verified.create_extract(elementList=e.foo_Codes,
+elementListSource=d.bar.df)` reads patterns from `e.foo_Codes.df[<listIndex>]`
+and scans them against `d.bar.df[<sourceField>]` — where `<listIndex>`
+is `projectTables.foo_Codes.listIndex` in YAML and `<sourceField>` is
+`projectTables.foo_Verified.sourceField` in YAML.
+
+| Other key | Purpose |
 |---|---|
 | `find_method` | `'regex'` (scan `sourceField` with regex patterns) or `'merge'` (exact-value join on `listIndex`). Default `'regex'`. |
-| `sourceField` | Column in `elementListSource` to scan / join. |
 | `groupName` | Column in the elementList that labels which regex matched. Defaults to `'group'`. |
 | `retained_fields` | Output columns to keep (plus always-keep join keys + `'group'`). |
 | `indexFields` | Treated as the natural join keys of the verified-codes table (used as `entityExtract`'s default `elementIndex`). |
+
+**Canonical call (trust the YAML):**
+
+```python
+e.foo_Verified.create_extract(
+    elementList=e.foo_Codes,
+    elementListSource=d.bar.df,
+)
+```
+
+That's it. `find_method`, `sourceField`, `groupName`, `retained_fields`,
+`indexFields` all flow from YAML. Everything else in the Python call
+is there only because it's a runtime DataFrame reference the YAML
+can't name directly.
+
+**Do NOT pass `sourceField=` explicitly** unless you genuinely want
+to override YAML for a one-off experiment. A common silent-bug pattern:
+
+```python
+# WRONG — overrides YAML, applies display-name regex patterns against ICD codes
+e.comorbidity_ICD10_Codes_Verified.create_extract(
+    elementList=e.comorbidity_ICD10_Codes,
+    elementListSource=d.condition_conditioncode.df,
+    sourceField='conditioncode_standard_id',   # <- overrides YAML!
+)
+```
+
+If the YAML `comorbidity_ICD10_Codes_Verified.sourceField` is
+`conditioncode_standard_primaryDisplay` (because the CSV patterns are
+written to match display names like "Hypertension", "Diabetes"), the
+explicit override silently redirects the scan to `conditioncode_standard_id`
+(values like "I10", "E11.9"). Almost zero rows match. The downstream
+extract is near-empty and nothing warns you. This bug actually shipped
+in 056 for a while.
 
 **`entityExtract` (pull patient-level records):**
 
@@ -597,11 +644,12 @@ e.mycodes.dict2pyspark()
 e.mycodes.print_pd(label='Disease codes', obs=500)
 
 # ---- Stage 2 ----
+# find_method and sourceField come from YAML on e.mycodesVerified.
+# DO NOT pass sourceField= here -- it would override YAML and risk
+# silently scanning the wrong column (see §7 item 27).
 e.mycodesVerified.create_extract(
     elementList=e.mycodes,
     elementListSource=d.condition_conditioncode.df,   # DICTIONARY, not r.*
-    find_method='regex',
-    sourceField='conditioncode_standard_id',
 )
 # Same rule: print all verified rows, not just the top 5, so you can
 # confirm every raw code matched at least one dictionary entry.
@@ -679,3 +727,4 @@ in production pipelines. If something breaks, check these first.
 24. **`entityExtract(elementList, entitySource)` raises `ValueError` when `elementList.df` is not a DataFrame.** Previously the underlying `identify_target_records` merely logged `"elementExtract is not a DataFrame, returning as-is"` and returned the non-DataFrame unchanged. That return value was then assigned to `self.df` of the target, so the real failure surfaced three frames later as a misleading `AttributeError: 'NoneType' object has no attribute ...`. Worse, under different paths it could quietly produce wrong data (the left side of the "inner join" doesn't exist, so there's nothing to join against). The new error enumerates the four typical causes of a missing `elementList.df`: (a) forgot to call `create_extract()` on the verified-codes Item in this session, (b) `create_extract()` matched zero rows (check the regex or merge keys), (c) the Item is in `status='ITEM_FAILED'` (run `r.report_str()`), (d) no YAML `projectTables` entry for that name so `.location` is unset and lazy-load from Hive is a no-op. If this raises, DO NOT wrap it in a try/except — fix the upstream step. An inner join against a non-existent left side is nonsense and any result would be wrong data.
 25. **`e.write_all()` at the end of a notebook used to re-write every table, even ones already persisted by `_auto_write`.** Every extract method (`dict2pyspark`, `load_csv_as_df`, `create_extract`, `entityExtract`, `write_index_table`) already calls `_auto_write` after setting `self.df`, so the Hive table is already current. The pre-flag `write_all()` overwrote each of those a second time, identical bytes, identical cost. The `df` setter now sets a `_dirty` flag, and `_auto_write` / `write()` clear it; `write_all(skip_clean=True)` (the default) skips items whose flag is False. In a pipeline that sticks to the extract methods, `write_all()` is essentially a no-op — it just prints `"SKIPPED (already persisted)"` lines. It remains load-bearing for items whose `.df` you mutated directly (`e.foo.df = e.foo.df.withColumn(...)`) — that assignment re-marks the item dirty, so the closing `write_all` picks it up. Pass `skip_clean=False` to force-rewrite every table regardless (equivalent to the old behavior).
 26. **`resource.reread_config_files()` without `globals().update(...)` doesn't rebind your notebook's `e`.** The reread rebuilds `resource.e` in place (new `Extract` object, new `ExtractItem` instances for every `projectTables` entry including any you just added), BUT your notebook's `e` variable — bound once in the setup cell via `locals().update(resource.load_into_local())` — still references the OLD `Extract`. Python names are references, not aliases; updating `resource.e` doesn't touch any other binding. Symptom: you add `scdpatient_icd` to YAML, call `resource.reread_config_files()`, and `e.scdpatient_icd` still raises `AttributeError`, while `resource.e.scdpatient_icd` works fine. Fix: `globals().update(resource.reread_config_files())`. Use `globals()` here rather than `locals()` — `globals()` in a Jupyter cell is reliably the user namespace, `locals()` is usually but not always. Separately, the reread **discards any in-memory `.df` that wasn't persisted** — the new ExtractItems start with `.df = None` and lazy-load from Hive. Run `e.write_all()` before the reread if you have uncommitted mutations you want to keep; otherwise you lose them.
+27. **Do NOT pass `sourceField=` explicitly to `create_extract`; put it in YAML.** `sourceField` names the column in `elementListSource` (the dictionary table) that the regex patterns are scanned against. It belongs in the YAML entry of the OUTPUT `*_Verified` item — not the input code list, not the dictionary side. `create_extract(sourceField=...)` OVERRIDES that YAML value silently. If a notebook hard-codes `sourceField='conditioncode_standard_id'` but the YAML says `sourceField: conditioncode_standard_primaryDisplay` (because the CSV patterns are written against display names like "Hypertension", not ICD codes like "I10"), the regex scans the wrong column, matches almost nothing, and the downstream extract is empty. The old 056-Comorbidity-Extraction had exactly this bug. **Canonical call:** `e.foo_Verified.create_extract(elementList=e.foo_Codes, elementListSource=d.bar.df)` — nothing else. The two YAML keys that govern the scan are asymmetric: `listIndex` (on the INPUT item — names the pattern column on `elementList.df`) and `sourceField` (on the OUTPUT item — names the scan column on `elementListSource.df`). §2.3 has the table.
