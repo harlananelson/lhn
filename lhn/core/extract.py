@@ -538,6 +538,25 @@ class ExtractItem(SharedMethodsMixin):
         )
 
         if set_self_df and result is not None:
+            # Respect `fieldList` on the receiver: project the joined
+            # result to the YAML-declared output schema before persisting.
+            # `fieldList` IS the column contract for downstream consumers
+            # (R _targets.R pipelines, CSV exports). Without this projection
+            # the notebook has to do a manual .select(...) after every
+            # entityExtract, which violates the "thin notebook" principle
+            # and drifts from YAML.
+            fieldList = getattr(self, 'fieldList', None)
+            if fieldList:
+                available = [c for c in fieldList if c in result.columns]
+                missing = [c for c in fieldList if c not in result.columns]
+                if missing:
+                    logger.warning(
+                        f"entityExtract on '{getattr(self, 'name', 'unknown')}': "
+                        f"fieldList columns not found in join result and "
+                        f"will be dropped: {missing}"
+                    )
+                if available:
+                    result = result.select(*available)
             self.df = result
             self._auto_write()
 
@@ -613,10 +632,17 @@ class ExtractItem(SharedMethodsMixin):
         # Apply retained_fields filter if configured
         retained = getattr(self, 'retained_fields', None)
         if retained and self.df is not None:
-            # Always keep join keys and group column alongside retained fields
+            # Always keep join keys and the group/label column alongside
+            # retained fields. The label column is whatever `groupName`
+            # resolved to (or literal 'group' when unset).
             index_fields = getattr(self, 'indexFields', [])
             keep = list(set(retained + index_fields))
-            # Add 'group' if it exists (from regex group preservation)
+            label_col = getattr(self, 'groupName',
+                                getattr(elementList, 'groupName', None)) or 'group'
+            if label_col in self.df.columns and label_col not in keep:
+                keep.append(label_col)
+            # Belt-and-suspenders: also preserve literal 'group' for
+            # backward compatibility with any caller that still emits it.
             if 'group' in self.df.columns and 'group' not in keep:
                 keep.append('group')
             # Only select columns that actually exist in the DataFrame
@@ -644,17 +670,29 @@ class ExtractItem(SharedMethodsMixin):
                 patient-level data, for performance).
             field (str): Column in source to match against.
         """
+        # Resolve groupName once — receiver first, then elementList.
+        # `groupName` is the semantic column name for the per-pattern label
+        # on BOTH sides of the asymmetry: the input column (in patterns.df)
+        # to read label values from, AND the output column written to the
+        # result. When groupName is not set we fall back to the historical
+        # default of 'group' for the output column (backward compat).
+        resolved_group_name = getattr(self, 'groupName',
+                                      getattr(patterns, 'groupName', None))
+        output_group_col = resolved_group_name or 'group'
+
         if hasattr(patterns, 'df'):
-            # ExtractItem with DataFrame — get pattern column and group column
+            # ExtractItem with DataFrame — read pattern + group columns
             list_index = getattr(patterns, 'listIndex', 'codes')
-            # Group column: check groupName on self (output table), then on patterns, then 'group'
-            group_col = getattr(self, 'groupName',
-                                getattr(patterns, 'groupName', None))
-            if group_col is None:
-                group_col = 'group' if 'group' in patterns.df.columns else list_index
-            cols_to_select = [group_col, list_index] if group_col != list_index else [list_index]
+            # Input column in patterns.df holding the label values
+            input_group_col = resolved_group_name
+            if input_group_col is None:
+                input_group_col = 'group' if 'group' in patterns.df.columns else list_index
+            cols_to_select = (
+                [input_group_col, list_index] if input_group_col != list_index
+                else [list_index]
+            )
             rows = patterns.df.select(*cols_to_select).distinct().collect()
-            group_patterns = [(row[group_col], row[list_index]) for row in rows]
+            group_patterns = [(row[input_group_col], row[list_index]) for row in rows]
         elif isinstance(patterns, dict):
             # dict: group_name -> regex_pattern
             group_patterns = list(patterns.items())
@@ -664,11 +702,15 @@ class ExtractItem(SharedMethodsMixin):
         else:
             group_patterns = [('default', str(patterns))]
 
-        # Iterate per group, filter, add group label, union
+        # Iterate per group, filter, add label in the semantic column, union.
+        # Output column name follows YAML `groupName` (fallback 'group') —
+        # this removes the old asymmetry where `groupName='Test'` would
+        # still produce a column literally named 'group', forcing notebooks
+        # to do a post-hoc withColumnRenamed.
         results = []
         for group_name, pattern in group_patterns:
             matched = source.filter(F.col(field).rlike(pattern))
-            matched = matched.withColumn('group', F.lit(group_name))
+            matched = matched.withColumn(output_group_col, F.lit(group_name))
             results.append(matched)
 
         if results:
