@@ -362,72 +362,86 @@ editing the `inputs:` block does not change what the notebook does.
 
 ## 3. Canonical notebook setup
 
-Every notebook in the pipeline should start with these cells, in
-this order. This is the pattern 053/054/056/057/058/064/067
-currently use.
+Pipeline notebooks start with a single call to
+`lhn.bootstrap.pipeline_setup()`. This is the form 057 and later
+notebooks use; notebooks that still carry the old inline 50-line setup
+block (path discovery + sys.path + cache_guard + Resources + status
+assertion across ~6 cells) should migrate to this pattern -- the
+library does all of that now, consistently, in one place.
 
 ```python
-# Cell 4 — environment + path discovery
-import os
-os.environ["PYSPARK_PYTHON"] = "python3"  # executors need this
-import sys, getpass
-from pathlib import Path
+# Cell 1 -- Environment + Resources in one call
+from lhn.bootstrap import pipeline_setup
 
-systemuser = getpass.getuser()
-# Path discovery: HDL layouts the user data under either
-# ~/work/Users/<user> or ~/work/IUH/<user>. Pick whichever exists.
-# Fail LOUDLY with a useful message if neither is present (subscript
-# of an empty list would otherwise raise an opaque IndexError).
-_candidates = [
-    os.path.join(Path.home(), 'work', 'Users', systemuser),
-    os.path.join(Path.home(), 'work', 'IUH', systemuser),
-]
-_found = [p for p in _candidates if os.path.exists(p)]
-if not _found:
-    raise RuntimeError(
-        f"Could not locate user data path for '{systemuser}'. "
-        f"Checked: {_candidates}. On HDL the path should be one of "
-        f"these; on a local dev box set user_path explicitly."
-    )
-user_path = _found[0]
-project_path = os.path.join(user_path, 'Projects', '<YourProject>')
-os.environ['DATA_PATH'] = user_path  # exposed to downstream CSV exports
+ctx = pipeline_setup('000-control.yaml')
 
-# Cell 6 — imports
-from lhn.header import *           # spark, F, Window
-from lhn import Resources
-from IPython.display import display, HTML
-display(HTML("<style>.container { width:99% !important; }</style>"))
+r, e, d = ctx.r, ctx.e, ctx.d
+spark, F, Window = ctx.spark, ctx.F, ctx.Window
+resource = ctx.resource
+user_path, project_path = ctx.user_path, ctx.project_path
+dataLoc = ctx.dataLoc
+```
 
-# Cell 7 — Resources
-os.chdir(project_path)
-resource = Resources(
+What `pipeline_setup()` does (see `lhn/bootstrap.py` for the source):
+
+1. **Env vars.** Unconditional `os.environ["PYSPARK_PYTHON"] = "python3"`
+   so Spark worker spawn resolves Python via PATH on each worker (some
+   HDL cluster images preset this to `/opt/conda/bin/python` which
+   doesn't exist on workers; see `§7 Kernel-env lessons` below).
+2. **Path discovery.** `$HDL_USER_PATH` env var, then `~/.hdl_user_path`
+   breadcrumb (written by `fetchupdate.sh`), then filesystem probe
+   (`~/work/Users/<user>`, `~/work/IUH/<user>`). Raises `RuntimeError`
+   if none exist.
+3. **Defensive `sys.path`.** No-op when the three pipeline repos are
+   installed via `pip install --user -e .` (what `fetchupdate.sh` does
+   now). Otherwise prepends their source trees.
+4. **sys.modules purge** for the pipeline packages so freshly-pulled
+   code takes effect in an already-running kernel.
+5. **Resources init with `base_path=project_path`** — no
+   `os.chdir(project_path)` side effect; two notebooks sharing a
+   kernel no longer fight over cwd.
+6. **Fail-loud status assertion.** Raises `RuntimeError` naming any
+   source Item with `status != 'PROCESSED'` instead of letting
+   `ITEM_FAILED` leak three frames downstream.
+7. **Notebook width CSS.**
+8. **Returns a `SimpleNamespace`** carrying `r`, `e`, `d`, `resource`,
+   `spark`, `F`, `Window`, `user_path`, `project_path`, and every
+   key from `resource.load_into_local()` (RWDSchema, projectSchema,
+   dataLoc, ...). Unpack what the notebook needs -- `locals().update(...)`
+   is no longer the idiom.
+
+Prerequisite: `lhn` must be importable. On HDL this is automatic
+after `fetchupdate.sh` runs (it does `pip install --user -e .` on
+the three pipeline repos, the preferred form over notebook-side
+`sys.path` surgery).
+
+**Do not pre-assign `r = resource.r`, `e = resource.e`, `d = resource.d`
+before `pipeline_setup()`** -- redundant at best and, for `d`,
+actively wrong (`resource.d` is the config-object dict, not the
+TableList; `load_into_local()` under the hood is what remaps `d`
+onto `resource.dictrwd` so `d.<table>.df` works).
+
+**Do not use `from lhn.header import *`** in the notebook body --
+the bootstrap returns `spark`, `F`, `Window` explicitly; star imports
+hide dependencies.
+
+### 3.1 For a one-off notebook with a non-default project dir
+
+All `pipeline_setup()` parameters have defaults matching the
+SickleCell_AI layout. Override per call as needed:
+
+```python
+ctx = pipeline_setup(
     local_config='000-control.yaml',
     global_config='configuration/config-global.yaml',
     schemaTag_config='configuration/config-RWD.yaml',
+    project_dir='Projects/SomeOtherProject',
+    shared_utils_dir='Projects/SomeOtherProject',   # where shared_utils lives
+    data_path_env_var='SOME_OTHER_DATA_PATH',
     debug=True,
+    widen_notebook=True,
 )
-
-# Cell 8 — surface short names + schemas into locals
-# load_into_local() returns a dict containing r (TableList), e (Extract),
-# d (REMAPPED onto resource.dictrwd — a TableList, not the config-object
-# dict), plus RWDSchema, projectSchema, dataLoc, and every dictList
-# TableList. locals().update(...) binds them all as bare names.
-locals().update(resource.load_into_local())
-print(r.report_str())  # catches silent ITEM_FAILED from Hive misses
 ```
-
-**Do not pre-assign `r = resource.r`, `e = resource.e`, `d = resource.d`.**
-Those assignments are redundant — `load_into_local()` surfaces `r`, `e`,
-`d`, and all schemas in one call. Worse, `d = resource.d` binds the
-*config-object* dict; only `load_into_local()` remaps `d` onto
-`resource.dictrwd` (the TableList) so that `d.<table>.df` works. If
-you pre-assign and then forget `locals().update(...)`, `d.<table>.df`
-raises `AttributeError`.
-
-**Do not remove the `locals().update(...)` line.** Everything
-downstream (dictionary-backed `create_extract`, schema references,
-dictList iteration) depends on the remap it performs.
 
 ---
 
@@ -729,3 +743,11 @@ in production pipelines. If something breaks, check these first.
 26. **`resource.reread_config_files()` without `globals().update(...)` doesn't rebind your notebook's `e`.** The reread rebuilds `resource.e` in place (new `Extract` object, new `ExtractItem` instances for every `projectTables` entry including any you just added), BUT your notebook's `e` variable — bound once in the setup cell via `locals().update(resource.load_into_local())` — still references the OLD `Extract`. Python names are references, not aliases; updating `resource.e` doesn't touch any other binding. Symptom: you add `scdpatient_icd` to YAML, call `resource.reread_config_files()`, and `e.scdpatient_icd` still raises `AttributeError`, while `resource.e.scdpatient_icd` works fine. Fix: `globals().update(resource.reread_config_files())`. Use `globals()` here rather than `locals()` — `globals()` in a Jupyter cell is reliably the user namespace, `locals()` is usually but not always. Separately, the reread **discards any in-memory `.df` that wasn't persisted** — the new ExtractItems start with `.df = None` and lazy-load from Hive. Run `e.write_all()` before the reread if you have uncommitted mutations you want to keep; otherwise you lose them.
 27. **Do NOT pass `sourceField=` explicitly to `create_extract`; put it in YAML.** `sourceField` names the column in `elementListSource` (the dictionary table) that the regex patterns are scanned against. It belongs in the YAML entry of the OUTPUT `*_Verified` item — not the input code list, not the dictionary side. `create_extract(sourceField=...)` OVERRIDES that YAML value silently. If a notebook hard-codes `sourceField='conditioncode_standard_id'` but the YAML says `sourceField: conditioncode_standard_primaryDisplay` (because the CSV patterns are written against display names like "Hypertension", not ICD codes like "I10"), the regex scans the wrong column, matches almost nothing, and the downstream extract is empty. The old 056-Comorbidity-Extraction had exactly this bug. **Canonical call:** `e.foo_Verified.create_extract(elementList=e.foo_Codes, elementListSource=d.bar.df)` — nothing else. The two YAML keys that govern the scan are asymmetric: `listIndex` (on the INPUT item — names the pattern column on `elementList.df`) and `sourceField` (on the OUTPUT item — names the scan column on `elementListSource.df`). §2.3 has the table.
 29. **Two-column CSVs — regex patterns belong in the CODE column, not the label column.** A typical code-list CSV has two columns: a human label (`Condition`, `Test`, `Procedure`) and a code column (`conditioncode_standard_id`, `labcode_standard_id`, `procedurecode_standard_id`). The CSV carries both BECAUSE the code column IS the regex pattern — "J45." (Asthma), "430.0" (Stroke), "718-7" (Haemoglobin). The label column is for display only. YAML should therefore set `listIndex` to the CODE column and `sourceField` on the `*_Verified` item to the dictionary's corresponding code column. `groupName` on the `*_Verified` item points to the LABEL column so the output `'group'` column carries the human-readable name. Historical bug: `listIndex: "Condition"` + `sourceField: "conditioncode_standard_primaryDisplay"` made `create_extract` treat "Asthma" as the regex and scan it against display names — ignoring the precise ICD code the CSV carried for exactly this purpose. Match codes against codes; let `groupName` handle the label separately. `comorbidity_procedure_Codes` in `000-control.yaml` shows the correct form (`listIndex: procedurecode_standard_id`, `sourceField: procedurecode_standard_id`, `groupName: Procedure`); `comorbidity_ICD10_Codes` / `labsHgbCodes` had the text-matching form for a long time and were fixed in the 2026-04-24 audit.
+
+30. **`create_extract` output column name now follows `groupName`.** Prior to `lhn 63f6496` (2026-04-24) the per-pattern label was always written to a literal column named `'group'`, regardless of what `groupName` resolved to. That forced every downstream notebook to do a post-hoc `withColumnRenamed('group', 'Test')` (or 'Condition', etc.) at the next boundary, and it meant the YAML `fieldList` of the receiver silently disagreed with the actual output column. Current behavior: `_extract_by_regex` sets the label via `withColumn(output_group_col, F.lit(group_name))` where `output_group_col = resolved_groupName or 'group'`. If YAML says `groupName: Test`, the output column is `Test` — no rename needed. Backward-compat: if `groupName` is unset, the output column is still `'group'` (existing callers that grep `'group'` keep working).
+
+31. **`entityExtract` now projects to `fieldList` on the receiver.** Prior to `lhn 63f6496` the join result was assigned to `self.df` and auto-written in full, regardless of what `fieldList` declared. Callers had to do a manual `.select(...)` in the notebook to trim to the R-pipeline contract. Current behavior: if the receiver has `fieldList` set, entityExtract projects `result = result.select(*[c for c in fieldList if c in result.columns])` before assigning and auto-writing. Columns in `fieldList` that aren't in the join result are dropped and a WARNING is logged. `fieldList` is the column contract for downstream consumers (R `_targets.R` CSV readers) and now drives the output schema end-to-end. No more notebook-side `.select(...)` after `entityExtract`.
+
+32. **Kernel env: `PYSPARK_PYTHON=python3`, plus `PYSPARK_SUBMIT_ARGS`.** HDL kernels shipped by `updatebionic/setup-lhn-dual-envs.sh` historically set `PYSPARK_PYTHON=/opt/conda/bin/python`. `/opt/conda/bin/python` is the driver's conda Python (what launches the ipykernel) but does **not** exist on Spark worker nodes, so every task that spawns a Python worker fails at `ProcessBuilder.start()` with `java.io.IOException: Cannot run program "/opt/conda/bin/python": error=2, No such file or directory`. The fix is to match the cluster-shipped `/usr/local/share/jupyter/kernels/pyspark/kernel.json`: `PYSPARK_PYTHON=python3` (PATH-resolved on each worker; compatible with pyspark 2.4) and `PYSPARK_SUBMIT_ARGS="--master yarn --deploy-mode client pyspark-shell"`. `PYSPARK_DRIVER_PYTHON` stays at `/opt/conda/bin/python`. Run `~/scripts/fix_pyspark_kernels.py` to update the user kernels; `updatebionic setup-lhn-dual-envs.sh` bakes it in for fresh installs. Mid-kernel `os.environ["PYSPARK_PYTHON"] = ...` **does NOT** fix this — by the time the notebook runs, the SparkContext has already been launched with the broken env (`spark.executorEnv.PYSPARK_PYTHON` baked in); SparkConf changes after session creation don't re-launch existing executors.
+
+33. **Notebook setup is a one-liner: `pipeline_setup()`.** See §3 above. The historical ~50-line inline setup block (`os.environ`, path discovery, `sys.path.insert`, `shared_utils.cache_guard` + fallback, `from lhn.header import *`, `os.chdir`, `Resources(...)`, `locals().update(...)`, status check) is collapsed into `lhn.bootstrap.pipeline_setup()`. Library fixes to the setup block now deploy once to every notebook instead of requiring ~15 coordinated edits. If a pipeline notebook still carries the old inline block, it should be migrated -- just replace Cells 4--9 with the §3 one-liner.
