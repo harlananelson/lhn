@@ -192,9 +192,14 @@ def pipeline_setup(
         If the user path or project directory cannot be found, or if any
         source Item fails to load/process.
     """
-    # 1. Env vars
+    # 1. Env vars. Unconditionally set PYSPARK_PYTHON so workers resolve
+    # `python3` via PATH on each node. Some HDL cluster images preset
+    # PYSPARK_PYTHON to a hardcoded path like `/opt/conda/bin/python`
+    # that doesn't exist on the executor nodes; using `setdefault` here
+    # would preserve that broken value and tasks would fail at worker
+    # spawn with "Cannot run program ...: No such file or directory".
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    os.environ.setdefault("PYSPARK_PYTHON", "python3")
+    os.environ["PYSPARK_PYTHON"] = "python3"
     sys.dont_write_bytecode = True
 
     # 2. Path discovery
