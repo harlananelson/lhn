@@ -231,17 +231,19 @@ def pipeline_setup(
         debug=debug,
     )
 
-    # 7. Build namespace from resource.load_into_local()
-    local_names = resource.load_into_local()
-    ns = SimpleNamespace(
+    # 7. Build namespace from resource.load_into_local().
+    # load_into_local() already returns 'resource' (plus r/e/d/schemas/...),
+    # so start from that dict and let explicit kwargs override any overlap
+    # (also avoids TypeError on duplicate keys).
+    ns_dict = dict(resource.load_into_local())
+    ns_dict.update(
         user_path=user_path,
         project_path=project_path,
-        resource=resource,
         spark=spark,
         F=F,
         Window=Window,
-        **local_names,
     )
+    ns = SimpleNamespace(**ns_dict)
 
     # 8. Status assertion -- fail loud on any silent ITEM_FAILED
     r = getattr(ns, 'r', None)
