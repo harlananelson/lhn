@@ -161,6 +161,7 @@ def pipeline_setup(
     data_path_env_var: str = 'SICKLE_CELL_DATA_PATH',
     debug: bool = True,
     widen_notebook: bool = True,
+    strict: bool = True,
 ) -> SimpleNamespace:
     """One-call pipeline environment setup.
 
@@ -250,7 +251,15 @@ def pipeline_setup(
     )
     ns = SimpleNamespace(**ns_dict)
 
-    # 8. Status assertion -- fail loud on any silent ITEM_FAILED
+    # 8. Status check
+    # When strict=True (default, production pipelines): fail loud on any
+    # silent ITEM_FAILED so missing/broken source tables don't leak into
+    # downstream cells as misleading AttributeErrors.
+    # When strict=False (exploratory / cross-schema notebooks): print the
+    # report, surface a clear warning naming the failed items, and continue.
+    # Useful when pointing a notebook at a general schema that doesn't
+    # contain every table the project's RWDTables config defines (e.g.,
+    # 099-FHIR-on-Spark-Proof against real_world_data_ed_feb_2026).
     r = getattr(ns, 'r', None)
     if r is not None:
         print(r.report_str())
@@ -260,10 +269,25 @@ def pipeline_setup(
         ]
         if failed:
             names = [getattr(item, 'name', repr(item)) for item in failed]
-            raise RuntimeError(
-                f"{len(failed)} source Item(s) failed to load/process: "
-                f"{names}. See report above."
-            )
+            if strict:
+                raise RuntimeError(
+                    f"{len(failed)} source Item(s) failed to load/process: "
+                    f"{names}. See report above. "
+                    f"Pass strict=False to pipeline_setup() to continue with "
+                    f"missing items (exploratory mode)."
+                )
+            else:
+                print()
+                print("=" * 72)
+                print(f"WARNING: {len(failed)} source Item(s) not PROCESSED "
+                      f"(strict=False, continuing):")
+                for item in failed:
+                    name = getattr(item, 'name', repr(item))
+                    status = getattr(item, 'status', 'unknown')
+                    print(f"  - {name}  [status: {status}]")
+                print("Downstream cells that reference these items will see "
+                      "item.df is None / status != PROCESSED.")
+                print("=" * 72)
 
     # 9. Notebook display
     if widen_notebook:
