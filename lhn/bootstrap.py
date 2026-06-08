@@ -182,8 +182,11 @@ def pipeline_setup(
     5. Import ``lhn.header`` (``spark``, ``F``, ``Window``) and ``Resources``.
     6. Initialize ``Resources`` with ``base_path=project_path`` (no chdir).
     7. Build a :class:`~types.SimpleNamespace` from ``resource.load_into_local()``.
-    8. Assert all source Items loaded successfully
-       (``status == 'PROCESSED'``); raise with a list of failures otherwise.
+    8. Check source Item status. Missing tables (``NOT_FOUND``) are NOTED and
+       skipped -- not fatal (a project may legitimately lack a source the shared
+       config-RWD.yaml lists, e.g. the SCD-only paid ``mortality`` table). Only
+       genuine processing failures (``FAILED`` -- table exists but errored) raise
+       under ``strict`` (default); ``strict=False`` warns and continues.
 
     Returns
     -------
@@ -295,41 +298,55 @@ def pipeline_setup(
     ns = SimpleNamespace(**ns_dict)
 
     # 8. Status check
-    # When strict=True (default, production pipelines): fail loud on any
-    # silent ITEM_FAILED so missing/broken source tables don't leak into
-    # downstream cells as misleading AttributeErrors.
-    # When strict=False (exploratory / cross-schema notebooks): print the
-    # report, surface a clear warning naming the failed items, and continue.
-    # Useful when pointing a notebook at a general schema that doesn't
-    # contain every table the project's RWDTables config defines (e.g.,
-    # 099-FHIR-on-Spark-Proof against real_world_data_ed_feb_2026).
+    #
+    # Source Items end in one of three states (spark_config_mapper status):
+    #   PROCESSED  -- loaded fine.
+    #   NOT_FOUND  -- the table does not exist in this schema. This is NORMAL and
+    #                 NOT an error: a project legitimately may not have every
+    #                 source the shared config-RWD.yaml lists (e.g. the paid
+    #                 `mortality` table is only licensed for SCD). These are NOTED
+    #                 and skipped -- never fatal, even under strict.
+    #   FAILED     -- the table exists but errored while processing. That is a real
+    #                 bug; it raises under strict (default), warns under strict=False.
+    # Downstream cells that reference a NOT_FOUND / FAILED item see item.df is None.
     r = getattr(ns, 'r', None)
     if r is not None:
         print(r.report_str())
-        failed = [
-            item for item in r.values()
-            if getattr(item, 'status', None) != 'PROCESSED'
-        ]
-        if failed:
-            names = [getattr(item, 'name', repr(item)) for item in failed]
+        not_found = [it for it in r.values()
+                     if getattr(it, 'status', None) == 'NOT_FOUND']
+        errored = [it for it in r.values()
+                   if getattr(it, 'status', None) not in ('PROCESSED', 'NOT_FOUND')]
+
+        # Missing source tables: note and continue (not an error).
+        if not_found:
+            print()
+            print("=" * 72)
+            print(f"NOTE: {len(not_found)} source table(s) not available in this "
+                  f"schema -- skipped (not an error):")
+            for it in not_found:
+                print(f"  - {getattr(it, 'name', repr(it))}  [NOT_FOUND]")
+            print("Downstream cells referencing these will see item.df is None.")
+            print("=" * 72)
+
+        # Genuine processing failures (table exists but errored): real bugs.
+        if errored:
+            names = [getattr(it, 'name', repr(it)) for it in errored]
             if strict:
                 raise RuntimeError(
-                    f"{len(failed)} source Item(s) failed to load/process: "
-                    f"{names}. See report above. "
-                    f"Pass strict=False to pipeline_setup() to continue with "
-                    f"missing items (exploratory mode)."
+                    f"{len(errored)} source Item(s) FAILED to process (table exists "
+                    f"but errored): {names}. See report above. Pass strict=False to "
+                    f"pipeline_setup() to continue anyway. (Missing tables are noted "
+                    f"above and do not raise.)"
                 )
             else:
                 print()
                 print("=" * 72)
-                print(f"WARNING: {len(failed)} source Item(s) not PROCESSED "
+                print(f"WARNING: {len(errored)} source Item(s) FAILED "
                       f"(strict=False, continuing):")
-                for item in failed:
-                    name = getattr(item, 'name', repr(item))
-                    status = getattr(item, 'status', 'unknown')
-                    print(f"  - {name}  [status: {status}]")
-                print("Downstream cells that reference these items will see "
-                      "item.df is None / status != PROCESSED.")
+                for it in errored:
+                    print(f"  - {getattr(it, 'name', repr(it))}  "
+                          f"[status: {getattr(it, 'status', 'unknown')}]")
+                print("Downstream cells referencing these will see item.df is None.")
                 print("=" * 72)
 
     # 9. Notebook display
