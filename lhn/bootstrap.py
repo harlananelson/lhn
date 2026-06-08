@@ -156,7 +156,7 @@ def pipeline_setup(
     local_config: str = '000-control.yaml',
     global_config: str = 'configuration/config-global.yaml',
     schemaTag_config: str = 'configuration/config-RWD.yaml',
-    project_dir: str = 'Projects/SickleCell_AI',
+    project_dir: Optional[str] = None,
     shared_utils_dir: str = 'Projects/SCDCernerProject',
     data_path_env_var: str = 'SICKLE_CELL_DATA_PATH',
     debug: bool = True,
@@ -169,7 +169,13 @@ def pipeline_setup(
 
     1. Set env vars (``PYTHONDONTWRITEBYTECODE``, ``PYSPARK_PYTHON``,
        ``<data_path_env_var>``).
-    2. Discover ``user_path`` (see :func:`discover_user_path`).
+    2. Discover ``user_path`` (see :func:`discover_user_path`) and resolve the
+       project directory. ``project_dir`` is **project-agnostic**: when not
+       given, it is derived from the current working directory (the dir
+       containing ``local_config``), so the same bare
+       ``pipeline_setup('000-control.yaml')`` works in any project. An explicit
+       ``project_dir`` always wins; if neither resolves it falls back to the
+       legacy ``Projects/SickleCell_AI`` default (unchanged SCD behavior).
     3. Defensive ``sys.path`` setup for pipeline repos.
     4. Purge ``sys.modules`` entries for pipeline packages so freshly-pulled
        code takes effect without a kernel restart.
@@ -204,12 +210,30 @@ def pipeline_setup(
     sys.dont_write_bytecode = True
 
     # 2. Path discovery
+    #
+    # Project-agnostic: derive the project from the notebook's working
+    # directory (the dir that contains `local_config`), so the same bare
+    # `pipeline_setup('000-control.yaml')` call works in ANY project. An
+    # explicit `project_dir` always wins. If neither resolves (e.g. a notebook
+    # run from outside its project dir), fall back to the legacy SickleCell_AI
+    # default so existing SCD notebooks behave exactly as before.
     user_path = discover_user_path()
-    project_path = os.path.join(user_path, project_dir)
+    if project_dir is None:
+        cwd = os.path.abspath(os.getcwd())
+        if os.path.isfile(os.path.join(cwd, local_config)):
+            project_path = cwd
+            project_dir = os.path.relpath(cwd, user_path)
+        else:
+            project_dir = 'Projects/SickleCell_AI'
+            project_path = os.path.join(user_path, project_dir)
+    else:
+        project_path = os.path.join(user_path, project_dir)
     if not os.path.isdir(project_path):
         raise RuntimeError(
-            f"Project directory not found: {project_path}. "
-            f"Has the project repo been cloned?"
+            f"Project directory not found: {project_path} "
+            f"(project_dir={project_dir!r}, cwd={os.getcwd()!r}). "
+            f"Run the notebook from its project dir (containing {local_config}), "
+            f"or pass project_dir=... explicitly."
         )
     os.environ[data_path_env_var] = user_path
 
