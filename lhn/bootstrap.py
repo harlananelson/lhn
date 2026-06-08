@@ -237,6 +237,25 @@ def pipeline_setup(
         )
     os.environ[data_path_env_var] = user_path
 
+    # global_config / schemaTag_config are USER-LEVEL configs shared across
+    # projects (``~/work/Users/<user>/configuration/``), NOT under the
+    # per-project ``base_path``. Resources resolves relative config paths
+    # against base_path (the project dir) and cwd only -- it never looks at the
+    # user level -- so from a project dir like Projects/hmi it can't find the
+    # shared config-global.yaml / config-RWD.yaml. Resolve them to absolute
+    # user-level paths here. Fall back to the original relative path when the
+    # user-level file isn't present, so this never regresses an environment
+    # that keeps these configs elsewhere. (local_config stays relative -- it is
+    # the project's own 000-control.yaml, resolved against base_path/cwd.)
+    def _user_level_config(p: str) -> str:
+        if os.path.isabs(p):
+            return p
+        candidate = os.path.join(user_path, p)
+        return candidate if os.path.exists(candidate) else p
+
+    global_config = _user_level_config(global_config)
+    schemaTag_config = _user_level_config(schemaTag_config)
+
     # 3. Defensive sys.path (no-op when editable installs are in place)
     configure_sys_path(
         user_path,
