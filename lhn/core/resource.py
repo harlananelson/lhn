@@ -256,6 +256,38 @@ class Resources:
             if self.debug:
                 logger.info(f"Loaded global config from {self.global_config_path}")
 
+        # Load the additional configs declared in config-global's
+        # ``config_table_locations`` (e.g. config-OMOP.yaml, config-IUH.yaml,
+        # config-dictomop.yaml). These are peers of config-RWD that wire extra
+        # schemas onto their own namespaces (the ``omopcallFunc`` -> ``o.*``,
+        # ``IUHdatacallFunc`` -> ``iuhealth.*``, etc.). They merge at medium
+        # priority -- above global, below the schema config and the local
+        # 000-control (which still win). Resolved next to config-global (the
+        # user-level ``configuration/`` dir). ``config_global`` is skipped (already
+        # loaded) and ``config_RWD`` is skipped here so its explicit schema-config
+        # load below keeps its existing precedence unchanged. Only existing files
+        # are loaded; a project that lacks a peer config (or whose schema isn't in
+        # its 000-control ``schemas``) is unaffected -- the matching callFun simply
+        # never fires.
+        table_locations = config.get('config_table_locations', {})
+        if table_locations and self.global_config_path:
+            config_dir = Path(self.global_config_path).parent
+            for key, entry in table_locations.items():
+                if key in ('config_global', 'config_RWD'):
+                    continue
+                location = entry.get('location') if isinstance(entry, dict) else entry
+                if not location:
+                    continue
+                sub_path = config_dir / Path(location).name
+                if sub_path.exists():
+                    sub_cfg = read_config(str(sub_path), self.replace, self.debug)
+                    config = merge_configs(config, sub_cfg)
+                    configs_loaded.append((key, sub_path))
+                    if self.debug:
+                        logger.info(f"Loaded {key} config from {sub_path}")
+                elif self.debug:
+                    logger.info(f"Skipped {key} config (not found): {sub_path}")
+
         # Load schema-specific config (medium priority)
         if self.schemaTag_config_path and self.schemaTag_config_path.exists():
             schema_cfg = read_config(str(self.schemaTag_config_path), self.replace, self.debug)
