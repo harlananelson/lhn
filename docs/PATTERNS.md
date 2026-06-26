@@ -122,9 +122,28 @@ workflow, kernels, and quarto constraints:
 
 `~/projects/hdl-harness/docs/txtarchive-hdl-integration.md`
 
-Orchestrator (local): `~/projects/hdl-harness/hdl_run.py` with `--validate --push
-`--fetchupdate --render --pull`. On HDL: `~/work/Users/$USER/scripts/render-and-push.sh`
-(deployed by `fetchupdate`).
+**Orchestrator (local):** `~/projects/hdl-harness/hdl_run.py` — use **`--all`** for the
+full loop, or toggle stages individually. Add **`--fix-loop`** with `--validate` to
+cycle check → 3090 fix → re-check until the gate is clean (or `--max-rounds`).
+
+```bash
+HARNESS=~/projects/hdl-harness
+CATALOG=~/projects/txtarchivetransfer/scripts/hdl_catalog.json
+
+# Full loop (validate → push → fetchupdate → render → pull + PHI scan)
+python $HARNESS/hdl_run.py allison/054-derm-cohort-identification.txt \
+  --config ~/projects/allison/000-control.yaml \
+  --refs ~/projects/allison/pipeline_refs.json \
+  --catalog $CATALOG \
+  --transfer ~/projects/txtarchivetransfer \
+  --hdl-project-dir '~/work/Users/$USER/Projects/derm' \
+  --all --fix-loop
+
+# Unattended: add --yes (skips confirmations; PHI scan on --pull still runs)
+```
+
+`--render` includes nbconvert; `--all` skips redundant `--execute`. On HDL after
+`fetchupdate`: `~/work/Users/$USER/scripts/render-and-push.sh`.
 
 ---
 
