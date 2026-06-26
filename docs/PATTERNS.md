@@ -28,6 +28,7 @@ and lints for the anti-patterns below). Prefer the orchestrator wrapper — it c
 `check_notebook.py` under `--validate`:
 
 ```bash
+# Gate-only (no push/render) — for full deploy use --all (includes --validate); see §7
 HARNESS=~/projects/hdl-harness
 python $HARNESS/hdl_run.py <notebook>.txt \
   --config <project>/000-control.yaml \
@@ -96,11 +97,11 @@ Use the configured paths (`ctx.dataLoc`, the ExtractItem `.csv`/`.location` defa
 ### 6. txtarchive `.txt` format
 
 Author notebooks as LLM-friendly `.txt` (full format:
-`~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter is a
-**Raw Cell wrapped in triple quotes**; code cells are `# Cell N`, markdown `# Markdown Cell
-N`. Without the triple-quote wrapper the YAML is lost on extraction (no title, no embedded
-resources). The raw cell must be **cell 1**; the `---` YAML fences inside the triple
-quotes are required — `txtarchive` parses them for `title` / `jupyter.kernelspec`.
+`~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter goes in
+**Raw Cell 1** as a Python multi-line string literal (`"""` … `"""`); code cells are
+`# Cell N`, markdown `# Markdown Cell N`. Without the `"""` wrapper the YAML is lost on
+extraction (no title, no embedded resources). The `---` YAML fences inside the string are
+required — `txtarchive` parses them for `title` / `jupyter.kernelspec`.
 Minimal header skeleton:
 
 ```
@@ -534,7 +535,8 @@ writeTable(
     description='Final SCD cohort with demographics',
 )
 
-# Export to CSV (via ExtractItem)
+# Assign custom-join result back to the ExtractItem before using .to_csv() /
+# .parquet (paths come from 000-control.yaml projectTables, not literals)
 e.final_cohort.df = final_cohort
 e.final_cohort.to_csv()
 
