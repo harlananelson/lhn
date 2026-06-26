@@ -23,20 +23,23 @@ HDL catalog before it ships. The rule of thumb: **use the package method, and co
 names from the data dictionary up front — don't write defensive code for unknowns.** These
 notebooks are single-project pipelines, not generalized libraries.
 
-Run the gate before deploying (it resolves `r.*`/`e.*`/`d.*`/`o.*` columns from the catalog
-and lints for the anti-patterns below):
+Run the gate before deploying (it resolves `r.*`/`e.*`/`d.*` columns from the catalog
+and lints for the anti-patterns below). Prefer the orchestrator wrapper — it calls
+`check_notebook.py` under `--validate`:
 
 ```bash
-python ~/projects/hdl-harness/check_notebook.py <notebook>.txt \
+HARNESS=~/projects/hdl-harness
+python $HARNESS/hdl_run.py <notebook>.txt \
   --config <project>/000-control.yaml \
   --refs <project>/pipeline_refs.json \
-  --catalog ~/projects/txtarchivetransfer/scripts/hdl_catalog.json
+  --catalog ~/projects/txtarchivetransfer/scripts/hdl_catalog.json \
+  --validate
 ```
 
 ### 1. Confirm column names; don't guess
 
 Resolve the real column name from the catalog (the harness derives the exact columns of
-every `r.*`/`e.*`/`d.*`/`o.*` ref) and reference it directly. No candidate-list guessing, no
+every `r.*`/`e.*`/`d.*` ref) and reference it directly. No candidate-list guessing, no
 optional-source hedging.
 
 ```python
@@ -89,7 +92,9 @@ dataLoc = ctx.dataLoc
 
 `entityExtract` not `entity_extract`; `elementList=` not `element_list=`. The gate flags
 near-miss method names (edit-distance) and unknown kwargs against the generated package API,
-so a typo is caught before HDL.
+so a typo is caught before HDL. Kwargs use the generated API's casing (`elementList`,
+`cacheResult`, `find_method`, `broadcast_flag`, …). See
+`~/projects/hdl-harness/docs/api_reference.md` for authoritative signatures.
 
 ### 5. No hardcoded absolute paths
 
@@ -102,7 +107,22 @@ Author notebooks as LLM-friendly `.txt` (full format:
 `~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter is a
 **Raw Cell wrapped in triple quotes**; code cells are `# Cell N`, markdown `# Markdown Cell
 N`. Without the triple-quote wrapper the YAML is lost on extraction (no title, no embedded
-resources). Validate locally:
+resources). Minimal header skeleton:
+
+```
+# Raw Cell
+'''
+---
+title: "054-derm-cohort-identification"
+jupyter:
+  kernelspec:
+    display_name: pyspark-lhn-dev
+    name: pyspark-lhn-dev
+---
+'''
+```
+
+Validate locally:
 `python -m txtarchive extract-notebooks <file>.txt <out> --kernel pyspark-lhn-dev`.
 
 ### 7. HDL deploy, execute, render, and review
@@ -123,8 +143,8 @@ workflow, kernels, and quarto constraints:
 `~/projects/hdl-harness/docs/txtarchive-hdl-integration.md`
 
 **Orchestrator (local):** `~/projects/hdl-harness/hdl_run.py` — use **`--all`** for the
-full loop, or toggle stages individually. Add **`--fix-loop`** with `--validate` to
-cycle check → 3090 fix → re-check until the gate is clean (or `--max-rounds`).
+full loop (includes **`--validate`**), or toggle stages individually. Add **`--fix-loop`**
+to cycle check → 3090 fix → re-check until the gate is clean (or `--max-rounds`).
 
 ```bash
 HARNESS=~/projects/hdl-harness
@@ -136,14 +156,15 @@ python $HARNESS/hdl_run.py allison/054-derm-cohort-identification.txt \
   --refs ~/projects/allison/pipeline_refs.json \
   --catalog $CATALOG \
   --transfer ~/projects/txtarchivetransfer \
-  --hdl-project-dir '~/work/Users/$USER/Projects/derm' \
+  --hdl-project-dir "$HOME/work/Users/$USER/Projects/derm" \
   --all --fix-loop
 
 # Unattended: add --yes (skips confirmations; PHI scan on --pull still runs)
 ```
 
 `--render` includes nbconvert; `--all` skips redundant `--execute`. On HDL after
-`fetchupdate`: `~/work/Users/$USER/scripts/render-and-push.sh`.
+`fetchupdate`, `hdl_run.py --all` triggers `~/work/Users/$USER/scripts/render-and-push.sh`
+via the automation layer (no manual SSH step when using the orchestrator).
 
 ---
 
@@ -162,8 +183,9 @@ r, e, d = ctx.r, ctx.e, ctx.d
 dataLoc = ctx.dataLoc
 ```
 
-> **Legacy note:** older examples used `Resources(local_config=...)`. New HDL notebooks
-> should use `pipeline_setup('000-control.yaml')` as above.
+> **Legacy note:** older examples used `Resources(local_config=...)`. The harness rejects
+> `Resources()` — migrate inherited notebooks to `pipeline_setup('000-control.yaml')` before
+> running the gate.
 
 ---
 
@@ -221,12 +243,9 @@ e.diabetes_index.write_index_table(
     histEnd='2025-01-28',
 )
 
-# (Alternative — the standalone FUNCTION takes them as kwargs, note `index_field`
-# singular here vs the `indexFields` config property above:
-#   from lhn.cohort import write_index_table
-#   write_index_table(inTable=e.diabetes_conditions.df, index_field=['personid'],
-#                     datefieldPrimary='servicedate', code='diabetes',
-#                     retained_fields=[]) )
+# Output column names default to index_<code> and last_<code> from the ExtractItem's
+# `code` property (here: index_diabetes, last_diabetes). Override with indexLabel=/
+# lastLabel= on the call if needed.
 
 # Result has columns: personid, index_diabetes, last_diabetes, etc.
 e.diabetes_index.attrition()
@@ -324,7 +343,7 @@ e.hgb_labs.entityExtract(
 from lhn import aggregate_fields
 import pyspark.sql.functions as F
 
-# Get min, max, mean per patient
+# Get min, max, mean per patient (`fields` is unused in the API; groupby is inferred)
 lab_summary = aggregate_fields(
     df=e.hgb_labs.df,
     index=['personid'],
@@ -417,6 +436,8 @@ demo = assign_age_group(demo, 'age')
 ```python
 # The ExtractItem methods below are config-driven (grain/date/code/gaps from
 # 000-control.yaml projectTables), not call kwargs — see Pattern 1 Step 4.
+# Set code: diagnosis on dx_index and code: medication on rx_index so output
+# columns are index_diagnosis / index_medication.
 
 # Step 1: Get patients with diagnosis
 e.dx_cohort.create_extract(...)
@@ -455,7 +476,7 @@ final_cohort = cohort.join(
 **Goal**: Analyze events within time windows (e.g., 90 days before/after index)
 
 ```python
-from pyspark.sql import functions as F
+from lhn.header import F
 
 # Get index dates
 index_df = e.cohort_index.df.select('personid', 'index_date')
@@ -469,8 +490,8 @@ windowed_events = events.join(
     on='personid',
     how='inner'
 ).filter(
-    (F.col('servicedate') >= F.date_sub('index_date', 90)) &
-    (F.col('servicedate') <= F.date_add('index_date', 90))
+    (F.col('servicedate') >= F.date_sub(F.col('index_date'), 90)) &
+    (F.col('servicedate') <= F.date_add(F.col('index_date'), 90))
 )
 ```
 
@@ -497,6 +518,8 @@ e.with_medication.attrition()
 count_people(final_df, description='Final cohort', person_id='personid')
 ```
 
+See also: [Error handling on HDL](#error-handling-on-hdl-fail-loud-dont-hedge).
+
 ---
 
 ## Pattern 9: Writing Output Tables
@@ -506,10 +529,10 @@ count_people(final_df, description='Final cohort', person_id='personid')
 ```python
 from lhn import writeTable
 
-# Write to Spark table
+# Write to Spark table (schema from pipeline_setup context)
 writeTable(
     DF=final_cohort,
-    outTable='project_schema.final_cohort_scd_rwd',
+    outTable=f'{ctx.projectSchema}.final_cohort_scd_rwd',
     partitionBy='tenant',
     description='Final SCD cohort with demographics',
     removeDuplicates=True
@@ -526,6 +549,9 @@ e.final_cohort.df.write.parquet(e.final_cohort.parquet)
 ---
 
 ## Common Field Names Reference
+
+Authoritative column names live in `hdl_catalog.json`; confirm via the harness before use.
+This table is a quick reference only.
 
 ### Encounter Fields
 - `personid` - Patient identifier
@@ -565,7 +591,7 @@ e.final_cohort.df.write.parquet(e.final_cohort.parquet)
 - `gender` - Gender
 - `race` - Race
 - `ethnicity` - Ethnicity
-- `maritalstatus` - Marital status
+- `maritalstatus` - Marital status (raw field; standardized as `marital_std` in Pattern 5)
 - `deceased` - Deceased flag
 - `zip_code` - ZIP code
 
@@ -598,7 +624,8 @@ exists."
 ## Performance Tips
 
 1. **Cache intermediate results**: Use `cacheResult=True` in entityExtract
-2. **Broadcast small tables**: Use `broadcast_flag=True` for small lookup tables
+2. **Broadcast small tables**: Use `broadcast_flag=True` on `entityExtract` for small lookup tables
 3. **Filter early**: Apply cohort filters as early as possible
 4. **Partition output**: Use `partitionBy='tenant'` for large tables
-5. **Limit during development**: Use `.limit(1000)` while testing
+5. **Limit during development**: Use `.limit(1000)` while testing; remove any `.limit(...)`
+   before `hdl_run.py --all` so full cohort outputs render and archive
