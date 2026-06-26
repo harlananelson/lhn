@@ -15,6 +15,98 @@ Most lhn pipelines follow this core pattern:
 
 ---
 
+## Notebook Authoring Conventions
+
+How to *write* an lhn pipeline notebook. These conventions are **enforced mechanically** by
+the `hdl-harness` gate (`check_notebook.py`), which validates each notebook against the live
+HDL catalog before it ships. The rule of thumb: **use the package method, and confirm column
+names from the data dictionary up front — don't write defensive code for unknowns.** These
+notebooks are single-project pipelines, not generalized libraries.
+
+Run the gate before deploying (it resolves `r.*`/`e.*`/`d.*`/`o.*` columns from the catalog
+and lints for the anti-patterns below):
+
+```bash
+python ~/projects/hdl-harness/check_notebook.py <notebook>.txt \
+  --config <project>/000-control.yaml \
+  --refs <project>/pipeline_refs.json \
+  --catalog ~/projects/txtarchivetransfer/scripts/hdl_catalog.json
+```
+
+### 1. Confirm column names; don't guess
+
+Resolve the real column name from the catalog (the harness derives the exact columns of
+every `r.*`/`e.*`/`d.*`/`o.*` ref) and reference it directly. No candidate-list guessing, no
+optional-source hedging.
+
+```python
+# BAD — defensive multi-name guessing / getattr hedging of an "optional" source
+def pick_col(df, candidates, label): ...
+code = pick_col(proc, ['procedurecode_standard_id', 'procedure_code', 'code'], 'code')
+item = getattr(e, name, None)
+
+# GOOD — confirmed from the catalog, referenced directly
+PROC_CODE = 'procedurecode_standard_id'          # confirmed: r.procedureSource
+df = r.procedureSource.df.filter(F.col(PROC_CODE).isin(codes))
+```
+
+### 2. Use lhn methods — don't hand-roll what the package does
+
+| Don't hand-roll | Use the method |
+|---|---|
+| `e.X.df.groupBy([c]).count()` | `e.X.tabulate(group_cols=[c], order_by='count', show=True)` |
+| `.groupBy([c]).agg(F.countDistinct(...))` | `e.X.tabulate(group_cols=[c], count_distinct=[...])` |
+| `.groupBy([c]).agg(F.min/F.max(date))` | `e.X.write_index_table(inTable=..., code=...)` |
+| `spark.read.csv(path)` | `e.X.load_csv_as_df()` (csv path comes from config) |
+
+These are **ExtractItem** methods — call them on the item `e.X`, **not** on its DataFrame:
+
+```python
+e.codes.tabulate(group_cols=['group'], show=True)     # GOOD
+e.codes.df.tabulate(group_cols=['group'])             # BAD — tabulate is not a DataFrame method
+```
+
+Before writing a new helper, grep the generated package API
+(`~/projects/hdl-harness/docs/api_reference.md`) for an existing function rather than
+re-implementing it.
+
+### 3. Bootstrap: bind spark first, then `pipeline_setup`
+
+```python
+# Bind spark FIRST so spark.sql works even if pipeline_setup raises (strict status check).
+from lhn.header import spark, F, Window
+
+from lhn.bootstrap import pipeline_setup
+ctx = pipeline_setup('000-control.yaml')
+r, e, d = ctx.r, ctx.e, ctx.d
+dataLoc = ctx.dataLoc
+```
+
+`pipeline_setup` derives the project from the notebook's cwd — run the notebook from its
+`Projects/<project>` dir; no per-project kwargs needed.
+
+### 4. Use the real API — correct names and kwargs
+
+`entityExtract` not `entity_extract`; `elementList=` not `element_list=`. The gate flags
+near-miss method names (edit-distance) and unknown kwargs against the generated package API,
+so a typo is caught before HDL.
+
+### 5. No hardcoded absolute paths
+
+Use the configured paths (`ctx.dataLoc`, the ExtractItem `.csv`/`.location` defaults), never
+`/home/<user>/...` literals — the notebook's cwd on HDL differs from your workstation.
+
+### 6. txtarchive `.txt` format
+
+Author notebooks as LLM-friendly `.txt` (full format:
+`~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter is a
+**Raw Cell wrapped in triple quotes**; code cells are `# Cell N`, markdown `# Markdown Cell
+N`. Without the triple-quote wrapper the YAML is lost on extraction (no title, no embedded
+resources). Validate locally:
+`python -m txtarchive extract-notebooks <file>.txt <out> --kernel pyspark-lhn-dev`.
+
+---
+
 ## Pattern 1: Simple Diagnosis-Based Cohort
 
 **Goal**: Find all patients with a specific diagnosis (e.g., Type 2 Diabetes)
