@@ -315,7 +315,8 @@ e.hydroxyurea_index.write_index_table(
 
 ### Step 1: Find Lab Codes
 ```python
-# Search lab dictionary for hemoglobin tests
+# Search lab dictionary for hemoglobin tests (labsmallSource = lookup;
+# labSource in Step 2 = full result table)
 e.hgb_codes.create_extract(
     elementList=e.hgb_search_patterns,
     elementListSource=r.labsmallSource.df,
@@ -527,11 +528,10 @@ from lhn import writeTable
 
 # Write to Spark table (schema from pipeline_setup context)
 writeTable(
-    DF=final_cohort,
+    df=final_cohort,
     outTable=f'{ctx.projectSchema}.final_cohort_scd_rwd',
     partitionBy='tenant',
     description='Final SCD cohort with demographics',
-    removeDuplicates=True
 )
 
 # Export to CSV (via ExtractItem)
