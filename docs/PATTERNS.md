@@ -56,7 +56,7 @@ df = r.procedureSource.df.filter(F.col(PROC_CODE).isin(codes))
 |---|---|
 | `e.X.df.groupBy([c]).count()` | `e.X.tabulate(group_cols=[c], order_by='count', show=True)` |
 | `.groupBy([c]).agg(F.countDistinct(...))` | `e.X.tabulate(group_cols=[c], count_distinct=[...])` |
-| `.groupBy([c]).agg(F.min/F.max(date))` | `e.X.write_index_table(inTable=..., code=...)` |
+| `.groupBy([c]).agg(F.min/F.max(date))` | `e.X.write_index_table(inTable=...)` (grain/date/`code` from config) |
 | `spark.read.csv(path)` | `e.X.load_csv_as_df()` (csv path comes from config) |
 
 These are **ExtractItem** methods — call them on the item `e.X`, **not** on its DataFrame:
@@ -159,15 +159,28 @@ e.diabetes_conditions.attrition()
 
 ### Step 4: Create Patient Index
 ```python
-# Create patient-level table with first/last diagnosis dates
+# Create patient-level table with first/last diagnosis dates.
+#
+# The ExtractItem METHOD e.X.write_index_table() takes only inTable (+ optional
+# histStart/histEnd/indexLabel/lastLabel/filterSimple). The index grain, date
+# column and code label come from the ExtractItem's CONFIG properties, NOT call
+# kwargs — set them in 000-control.yaml projectTables:
+#   diabetes_index:
+#     indexFields      : [personid]     # NOTE: config property is `indexFields`
+#     datefieldPrimary : servicedate
+#     code             : diabetes
 e.diabetes_index.write_index_table(
     inTable=e.diabetes_conditions,
     histStart='2015-01-01',
     histEnd='2025-01-28',
-    index_field=['personid'],
-    datefieldPrimary='servicedate',
-    code='diabetes'
 )
+
+# (Alternative — the standalone FUNCTION takes them as kwargs, note `index_field`
+# singular here vs the `indexFields` config property above:
+#   from lhn.cohort import write_index_table
+#   write_index_table(inTable=e.diabetes_conditions.df, index_field=['personid'],
+#                     datefieldPrimary='servicedate', code='diabetes',
+#                     retained_fields=[]) )
 
 # Result has columns: personid, index_diabetes, last_diabetes, etc.
 e.diabetes_index.attrition()
@@ -215,17 +228,20 @@ e.hydroxyurea_meds.entityExtract(
 
 ### Step 4: Create Medication Index with Gaps
 ```python
-# Track first/last use and therapy gaps
+# Track first/last use and therapy gaps. As in Pattern 1, the grain/date/code —
+# and the gap-segmentation settings (datefieldStop, max_gap, sort_fields) — are
+# CONFIG properties on the ExtractItem, not call kwargs. In 000-control.yaml:
+#   hydroxyurea_index:
+#     indexFields      : [personid]
+#     datefieldPrimary : administrationdate
+#     datefieldStop    : administrationenddate
+#     code             : hydroxyurea
+#     max_gap          : 90              # days gap → new therapy course
+#     sort_fields      : [administrationdate]
 e.hydroxyurea_index.write_index_table(
     inTable=e.hydroxyurea_meds,
     histStart='2015-01-01',
     histEnd='2025-01-28',
-    index_field=['personid'],
-    datefieldPrimary='administrationdate',
-    datefieldStop='administrationenddate',
-    code='hydroxyurea',
-    max_gap=90,  # Days gap to consider new therapy course
-    sort_fields=['administrationdate']
 )
 
 # Result includes: course_of_therapy, therapy_gaps, etc.
