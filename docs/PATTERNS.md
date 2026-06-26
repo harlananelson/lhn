@@ -104,8 +104,8 @@ quotes are required — `txtarchive` parses them for `title` / `jupyter.kernelsp
 Minimal header skeleton:
 
 ```
-# Raw Cell
-'''
+# Raw Cell 1
+"""
 ---
 title: "054-derm-cohort-identification"
 jupyter:
@@ -113,7 +113,7 @@ jupyter:
     display_name: pyspark-lhn-dev
     name: pyspark-lhn-dev
 ---
-'''
+"""
 ```
 
 Validate locally:
