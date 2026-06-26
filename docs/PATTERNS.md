@@ -8,8 +8,8 @@ Use these patterns as templates for building healthcare data extraction workflow
 Most lhn pipelines follow this core pattern:
 
 ```
-1. create_extract()   -> Find codes/identifiers from reference tables
-2. entityExtract()    -> Retrieve entity records using those codes
+1. create_extract()   -> Search a reference/dictionary table for codes
+2. entityExtract()    -> Pull patient records for those codes
 3. write_index_table() -> Create patient-level summary with first/last dates
 ```
 
@@ -171,7 +171,7 @@ the project from cwd — no per-project kwargs.
 
 ```python
 # Bind spark FIRST so spark.sql works even if pipeline_setup raises.
-from lhn.header import spark, F, Window
+from lhn.header import spark, F
 
 from lhn.bootstrap import pipeline_setup
 ctx = pipeline_setup('000-control.yaml')
@@ -329,16 +329,17 @@ e.hgb_labs.entityExtract(
     elementList=e.hgb_codes,
     entitySource=r.labSource.df,
     cohort=e.study_cohort,
-    cacheResult=True
+    cacheResult=True,
+    broadcast_flag=True,  # small code list — broadcast for join performance
 )
 ```
 
 ### Step 3: Aggregate Lab Values
 ```python
 from lhn import aggregate_fields
-import pyspark.sql.functions as F
+from lhn.header import F
 
-# Get min, max, mean per patient (groupby inferred from non-index columns)
+# Get min, max, mean per patient (groupby defined by `index`)
 lab_summary = aggregate_fields(
     df=e.hgb_labs.df,
     index=['personid'],
@@ -366,7 +367,7 @@ e.cohort_encounters.entityExtract(
 ### Step 2: Calculate Usage Metrics
 ```python
 from lhn import calcUsage
-import pyspark.sql.functions as F
+from lhn.header import F
 
 usage = calcUsage(
     df=e.cohort_encounters.df,
@@ -414,7 +415,7 @@ demo = group_races(demo, 'race', 'race_std')
 demo = group_gender(demo, 'gender', 'gender_std')
 # Returns: 'Female', 'Male', 'Other', 'Unknown'
 
-demo = group_marital_status(demo, 'marital_status', 'marital_std')
+demo = group_marital_status(demo, 'maritalstatus', 'marital_std')
 # Returns: 'Married', 'Not Married', 'Unknown'
 
 demo = assign_age_group(demo, 'age')
@@ -433,13 +434,13 @@ demo = assign_age_group(demo, 'age')
 # Set code: diagnosis on dx_index and code: medication on rx_index so output
 # columns are index_diagnosis / index_medication.
 
-# Step 1: Get patients with diagnosis
-e.dx_cohort.create_extract(...)
+# Step 1: Get patients with diagnosis (see Pattern 1 Steps 2–3 for full kwargs)
+e.dx_codes.create_extract(...)
 e.dx_conditions.entityExtract(...)
 e.dx_index.write_index_table(inTable=e.dx_conditions)
 
 # Step 2: Get patients with medication
-e.rx_cohort.create_extract(...)
+e.rx_codes.create_extract(...)
 e.rx_meds.entityExtract(...)
 e.rx_index.write_index_table(inTable=e.rx_meds)
 
@@ -497,9 +498,9 @@ windowed_events = events.join(
 **Goal**: Track patient counts through pipeline steps
 
 ```python
-from lhn import attrition, count_people
+from lhn import count_people
 
-# After each major step, call attrition
+# After each major step, call the ExtractItem attrition method
 e.initial_cohort.attrition()
 # Output: Records: 50,000 | Patients: 10,000
 
