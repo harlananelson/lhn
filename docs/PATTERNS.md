@@ -105,6 +105,47 @@ N`. Without the triple-quote wrapper the YAML is lost on extraction (no title, n
 resources). Validate locally:
 `python -m txtarchive extract-notebooks <file>.txt <out> --kernel pyspark-lhn-dev`.
 
+### 7. HDL deploy, execute, render, and review
+
+Notebooks ship as LLM-friendly `.txt` archives via `txtarchivetransfer`, extract on HDL
+with `fetchupdate.sh` / `extract-changed.sh`, then run through the harness render path:
+
+```
+nbconvert --execute  →  quarto --no-execute (md or html)  →  Projects/archive/<subdir>/  →  git push  →  local git pull
+```
+
+- **md** when the executed notebook has no graphics or formatted tables (gtsummary/gt HTML).
+- **html** when it does (`render_format.py` auto-detects).
+
+Archive subdir mirrors the transfer repo (`hmi/`, `allison/`, `SickleCell/`, …). Full
+workflow, kernels, and quarto constraints:
+
+`~/projects/hdl-harness/docs/txtarchive-hdl-integration.md`
+
+Orchestrator (local): `~/projects/hdl-harness/hdl_run.py` with `--validate --push
+`--fetchupdate --render --pull`. On HDL: `~/work/Users/$USER/scripts/render-and-push.sh`
+(deployed by `fetchupdate`).
+
+---
+
+## Standard notebook setup (use in every pattern)
+
+Run the notebook from its `Projects/<project>` directory on HDL. `pipeline_setup` derives
+the project from cwd — no per-project kwargs.
+
+```python
+# Bind spark FIRST so spark.sql works even if pipeline_setup raises.
+from lhn.header import spark, F, Window
+
+from lhn.bootstrap import pipeline_setup
+ctx = pipeline_setup('000-control.yaml')
+r, e, d = ctx.r, ctx.e, ctx.d
+dataLoc = ctx.dataLoc
+```
+
+> **Legacy note:** older examples used `Resources(local_config=...)`. New HDL notebooks
+> should use `pipeline_setup('000-control.yaml')` as above.
+
 ---
 
 ## Pattern 1: Simple Diagnosis-Based Cohort
@@ -112,26 +153,12 @@ resources). Validate locally:
 **Goal**: Find all patients with a specific diagnosis (e.g., Type 2 Diabetes)
 
 ### Step 1: Setup
-```python
-from lhn import Resources
-from lhn.core.extract import Extract
 
-# Initialize resources
-resource = Resources(
-    local_config='000-config.yaml',
-    global_config='config-global.yaml',
-    schemaTag_config='config-RWD.yaml',
-    replace={'today': '2025-01-28'},
-    debug=False
-)
-
-r = resource.r  # RWD tables
-e = resource.e  # Extract tables
-```
+Use **Standard notebook setup** above (`pipeline_setup('000-control.yaml')`).
 
 ### Step 2: Find Diagnosis Codes
 ```python
-# e.diabetes_codes is defined in 000-config.yaml projectTables
+# e.diabetes_codes is defined in 000-control.yaml projectTables
 # It searches conditionSource for ICD codes matching the pattern
 
 e.diabetes_codes.create_extract(
@@ -194,7 +221,7 @@ e.diabetes_index.attrition()
 
 ### Step 1: Define Drug Search Patterns
 ```yaml
-# In 000-config.yaml projectTables:
+# In 000-control.yaml projectTables:
 projectTables:
   hydroxyurea_codes:
     label: "Hydroxyurea drug codes"
@@ -525,21 +552,27 @@ e.final_cohort.df.write.parquet(e.final_cohort.parquet)
 
 ---
 
-## Error Handling Pattern
+## Error handling on HDL (fail loud, don't hedge)
+
+HDL pipeline notebooks are **single-project**, not reusable libraries. The harness
+discourages defensive patterns (candidate column lists, `getattr(r, ...)`, silent skips).
+
+**Preferred:** confirm columns and sources from the catalog up front; let extraction errors
+surface so you fix config or code — don't wrap `create_extract` / `entityExtract` in
+try/except that skips downstream steps.
 
 ```python
-try:
-    e.my_extract.create_extract(...)
-except Exception as ex:
-    logger.error(f"Failed to create extract: {ex}")
-    # Fallback or skip
+# GOOD — attrition after each step shows empty extracts immediately
+e.my_codes.create_extract(...)
+e.my_codes.attrition()          # Records: 0 | Patients: 0 → investigate, don't skip silently
 
-# Check if extract has data before proceeding
-if e.my_extract.df is not None and e.my_extract.df.count() > 0:
-    e.next_step.entityExtract(...)
-else:
-    logger.warning("No records found, skipping next step")
+e.my_conditions.entityExtract(...)
+e.my_conditions.attrition()
 ```
+
+Use `attrition()` / `count_people()` (Pattern 8) for visibility. Reserve try/except for
+genuine infrastructure faults (e.g. transient Spark session), not for "maybe this column name
+exists."
 
 ---
 
