@@ -369,15 +369,18 @@ demo = assign_age_group(demo, 'age')
 **Goal**: Build cohort requiring multiple criteria
 
 ```python
+# The ExtractItem methods below are config-driven (grain/date/code/gaps from
+# 000-control.yaml projectTables), not call kwargs — see Pattern 1 Step 4.
+
 # Step 1: Get patients with diagnosis
 e.dx_cohort.create_extract(...)
 e.dx_conditions.entityExtract(...)
-e.dx_index.write_index_table(...)
+e.dx_index.write_index_table(inTable=e.dx_conditions)
 
 # Step 2: Get patients with medication
 e.rx_cohort.create_extract(...)
 e.rx_meds.entityExtract(...)
-e.rx_index.write_index_table(...)
+e.rx_index.write_index_table(inTable=e.rx_meds)
 
 # Step 3: Combine criteria
 cohort = e.dx_index.df.join(
