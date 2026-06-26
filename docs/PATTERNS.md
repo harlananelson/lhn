@@ -60,7 +60,7 @@ df = r.procedureSource.df.filter(F.col(PROC_CODE).isin(codes))
 | `e.X.df.groupBy([c]).count()` | `e.X.tabulate(group_cols=[c], order_by='count', show=True)` |
 | `.groupBy([c]).agg(F.countDistinct(...))` | `e.X.tabulate(group_cols=[c], count_distinct=[...])` |
 | `.groupBy([c]).agg(F.min/F.max(date))` | `e.X.write_index_table(inTable=...)` (grain/date/`code` from config) |
-| `spark.read.csv(path)` | `e.X.load_csv_as_df()` (csv path comes from config) |
+| `spark.read.csv(path)` | `e.X.load_csv_as_df()` (path from `csv:` in `000-control.yaml projectTables`) |
 
 These are **ExtractItem** methods — call them on the item `e.X`, **not** on its DataFrame:
 
@@ -75,25 +75,17 @@ re-implementing it.
 
 ### 3. Bootstrap: bind spark first, then `pipeline_setup`
 
-```python
-# Bind spark FIRST so spark.sql works even if pipeline_setup raises (strict status check).
-from lhn.header import spark, F, Window
-
-from lhn.bootstrap import pipeline_setup
-ctx = pipeline_setup('000-control.yaml')
-r, e, d = ctx.r, ctx.e, ctx.d
-dataLoc = ctx.dataLoc
-```
-
-`pipeline_setup` derives the project from the notebook's cwd — run the notebook from its
-`Projects/<project>` dir; no per-project kwargs needed.
+Use the [Standard notebook setup](#standard-notebook-setup-use-in-every-pattern) block in every
+notebook. `pipeline_setup` derives the project from the notebook's cwd — run from
+`Projects/<project>`; no per-project kwargs needed.
 
 ### 4. Use the real API — correct names and kwargs
 
 `entityExtract` not `entity_extract`; `elementList=` not `element_list=`. The gate flags
 near-miss method names (edit-distance) and unknown kwargs against the generated package API,
-so a typo is caught before HDL. Kwargs use the generated API's casing (`elementList`,
-`cacheResult`, `find_method`, `broadcast_flag`, …). See
+so a typo is caught before HDL. The generated API mixes camelCase (`elementList`,
+`elementListSource`, `cacheResult`) with snake_case (`find_method`, `broadcast_flag`) —
+use the exact spellings from the API ref. See
 `~/projects/hdl-harness/docs/api_reference.md` for authoritative signatures.
 
 ### 5. No hardcoded absolute paths
@@ -107,7 +99,9 @@ Author notebooks as LLM-friendly `.txt` (full format:
 `~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter is a
 **Raw Cell wrapped in triple quotes**; code cells are `# Cell N`, markdown `# Markdown Cell
 N`. Without the triple-quote wrapper the YAML is lost on extraction (no title, no embedded
-resources). Minimal header skeleton:
+resources). The raw cell must be **cell 1**; the `---` YAML fences inside the triple
+quotes are required — `txtarchive` parses them for `title` / `jupyter.kernelspec`.
+Minimal header skeleton:
 
 ```
 # Raw Cell
@@ -131,7 +125,7 @@ Notebooks ship as LLM-friendly `.txt` archives via `txtarchivetransfer`, extract
 with `fetchupdate.sh` / `extract-changed.sh`, then run through the harness render path:
 
 ```
-nbconvert --execute  →  quarto --no-execute (md or html)  →  Projects/archive/<subdir>/  →  git push  →  local git pull
+nbconvert --execute  →  quarto --no-execute (md or html)  →  Projects/archive/<subdir>/  →  git push  →  local git pull  →  PHI scan
 ```
 
 - **md** when the executed notebook has no graphics or formatted tables (gtsummary/gt HTML).
@@ -162,9 +156,11 @@ python $HARNESS/hdl_run.py allison/054-derm-cohort-identification.txt \
 # Unattended: add --yes (skips confirmations; PHI scan on --pull still runs)
 ```
 
-`--render` includes nbconvert; `--all` skips redundant `--execute`. On HDL after
-`fetchupdate`, `hdl_run.py --all` triggers `~/work/Users/$USER/scripts/render-and-push.sh`
-via the automation layer (no manual SSH step when using the orchestrator).
+`--render` includes nbconvert execution. `--all` orchestrates the full sequence (validate,
+push, fetch, execute+render, pull, PHI scan) — a separate `--execute` flag is unnecessary.
+On HDL after `fetchupdate`, `hdl_run.py --all` triggers
+`~/work/Users/$USER/scripts/render-and-push.sh` via the automation layer (no manual SSH
+step when using the orchestrator).
 
 ---
 
@@ -183,9 +179,9 @@ r, e, d = ctx.r, ctx.e, ctx.d
 dataLoc = ctx.dataLoc
 ```
 
-> **Legacy note:** older examples used `Resources(local_config=...)`. The harness rejects
-> `Resources()` — migrate inherited notebooks to `pipeline_setup('000-control.yaml')` before
-> running the gate.
+> **Legacy note:** older examples used `Resources(local_config=...)`. New HDL notebooks
+> should use `pipeline_setup('000-control.yaml')` as above; migrate inherited notebooks
+> before running the gate.
 
 ---
 
@@ -209,7 +205,7 @@ e.diabetes_codes.create_extract(
 )
 
 # Check what was found
-e.diabetes_codes.showIU(obs=10)
+e.diabetes_codes.showIU(obs=10)   # sample matched codes (IU tenant filter)
 e.diabetes_codes.attrition()
 ```
 
@@ -263,7 +259,6 @@ e.diabetes_index.attrition()
 projectTables:
   hydroxyurea_codes:
     label: "Hydroxyurea drug codes"
-    indexFields: [drugcode]
 
   hydroxyurea_list:
     label: "Search patterns for hydroxyurea"
@@ -343,11 +338,10 @@ e.hgb_labs.entityExtract(
 from lhn import aggregate_fields
 import pyspark.sql.functions as F
 
-# Get min, max, mean per patient (`fields` is unused in the API; groupby is inferred)
+# Get min, max, mean per patient (groupby inferred from non-index columns)
 lab_summary = aggregate_fields(
     df=e.hgb_labs.df,
     index=['personid'],
-    fields=['resultvalue'],
     values=['resultvalue'],
     aggfuncs=[F.min, F.max, F.avg, F.count],
     aggfunc_names=['min', 'max', 'avg', 'count']
@@ -449,7 +443,8 @@ e.rx_cohort.create_extract(...)
 e.rx_meds.entityExtract(...)
 e.rx_index.write_index_table(inTable=e.rx_meds)
 
-# Step 3: Combine criteria
+# Step 3: Combine criteria (produces index_diagnosis, last_diagnosis,
+# index_medication, last_medication from the code: values above)
 cohort = e.dx_index.df.join(
     e.rx_index.df,
     on='personid',
@@ -478,8 +473,8 @@ final_cohort = cohort.join(
 ```python
 from lhn.header import F
 
-# Get index dates
-index_df = e.cohort_index.df.select('personid', 'index_date')
+# Get index dates (column is index_<code> from write_index_table — here code: cohort)
+index_df = e.cohort_index.df.select('personid', 'index_cohort')
 
 # Get all events
 events = r.conditionSource.df
@@ -490,8 +485,8 @@ windowed_events = events.join(
     on='personid',
     how='inner'
 ).filter(
-    (F.col('servicedate') >= F.date_sub(F.col('index_date'), 90)) &
-    (F.col('servicedate') <= F.date_add(F.col('index_date'), 90))
+    (F.col('servicedate') >= F.date_sub(F.col('index_cohort'), 90)) &
+    (F.col('servicedate') <= F.date_add(F.col('index_cohort'), 90))
 )
 ```
 
