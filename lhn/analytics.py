@@ -416,3 +416,99 @@ def groupCount(df, field, id='personid'):
         .reset_index()
     )
     return result
+
+
+def distill_labs(df, loinc_field, loincs, value_field, date_field,
+                 index=None, index_date_field=None, invalid_field=None,
+                 code='lab'):
+    """Distill a long lab table to ONE row per person (the PySpark→R/CSV bridge).
+
+    Labs are the canonical case where the per-cohort record set is too large to
+    export as a raw CSV — there are many results per person. This reduces a long,
+    cohort-filtered lab table to a person-level summary suitable for
+    ``inst/extdata/<project>/`` and the R ``targets`` pipeline.
+
+    Best-practice contract — do these BEFORE calling:
+      * Filter to the cohort already (``entityExtract(cohort=...)``).
+      * ``value_field`` must be NUMERIC and in ONE harmonized unit. Unit conversion
+        is assay/project-specific (LOINC does not identify the instrument), so it is
+        the caller's job — see the troponin ``troponinLabsStd`` harmonization.
+      * Flag bad/implausible rows via ``invalid_field`` (a boolean column); they are
+        dropped here so a corrupt value cannot win the peak.
+      * For the pre/post split, join the per-person index date onto ``df`` first so
+        ``index_date_field`` is a column on ``df``.
+
+    Produces, per ``index``:
+      ``<code>_n``, ``<code>_min``, ``<code>_max``, ``<code>_median``,
+      ``<code>_peak`` (= max), ``<code>_first_date``, ``<code>_last_date``.
+    If ``index_date_field`` is given, also the pre/post split around that date (the
+    post-PCI troponin pattern):
+      ``<code>_pre_peak``, ``<code>_post_peak``, ``<code>_post_delta`` (post − pre),
+      ``<code>_pre_n``, ``<code>_post_n``, ``<code>_post_first_date``,
+      ``<code>_post_last_date``.
+
+    Join human-readable lab names (LOINC → name) from ``labs_factable`` afterward.
+
+    NOTE: smoke-test on HDL (Spark 2.4) before relying on it — the median uses
+    ``percentile_approx`` via ``F.expr``.
+
+    Args:
+        df: Spark DataFrame of long lab rows (cohort-filtered).
+        loinc_field (str): column holding the LOINC code.
+        loincs (list): LOINC codes to keep.
+        value_field (str): numeric, unit-harmonized value column.
+        date_field (str): lab date column.
+        index (list): person grain (default ``['personid', 'tenant']``).
+        index_date_field (str): optional index-date column on ``df`` for the
+            pre/post split.
+        invalid_field (str): optional boolean column; ``True`` rows are dropped.
+        code (str): prefix for the output column names.
+
+    Returns:
+        Spark DataFrame keyed by ``index``, one row per person.
+
+    Example:
+        >>> hs = distill_labs(e.troponinLabsStd.df,
+        ...                   loinc_field='labcode_standard_id',
+        ...                   loincs=['89579-7', '89577-1', '89578-9'],
+        ...                   value_field='troponin_value_ngL',
+        ...                   date_field='datetimeLab',
+        ...                   index_date_field='pci_date',
+        ...                   invalid_field='troponin_value_ngL_invalid',
+        ...                   code='hs_tni')
+    """
+    index = list(index) if index else ['personid', 'tenant']
+    drop_invalid = F.col(invalid_field) if invalid_field else F.lit(False)
+    base = (df
+            .filter(F.col(loinc_field).isin(list(loincs)))
+            .withColumn('_v', F.col(value_field).cast('double'))
+            .withColumn('_d', F.to_date(F.col(date_field)))
+            .filter(F.col('_v').isNotNull() & F.col('_d').isNotNull() & ~drop_invalid))
+
+    aggs = [
+        F.count('_v').alias(f'{code}_n'),
+        F.min('_v').alias(f'{code}_min'),
+        F.max('_v').alias(f'{code}_max'),
+        F.expr('percentile_approx(_v, 0.5)').alias(f'{code}_median'),
+        F.max('_v').alias(f'{code}_peak'),
+        F.min('_d').alias(f'{code}_first_date'),
+        F.max('_d').alias(f'{code}_last_date'),
+    ]
+
+    if index_date_field is not None:
+        ref = F.to_date(F.col(index_date_field))
+        is_pre, is_post = (F.col('_d') < ref), (F.col('_d') >= ref)
+        aggs += [
+            F.max(F.when(is_pre, F.col('_v'))).alias(f'{code}_pre_peak'),
+            F.max(F.when(is_post, F.col('_v'))).alias(f'{code}_post_peak'),
+            F.count(F.when(is_pre, True)).alias(f'{code}_pre_n'),
+            F.count(F.when(is_post, True)).alias(f'{code}_post_n'),
+            F.min(F.when(is_post, F.col('_d'))).alias(f'{code}_post_first_date'),
+            F.max(F.when(is_post, F.col('_d'))).alias(f'{code}_post_last_date'),
+        ]
+
+    out = base.groupBy(*index).agg(*aggs)
+    if index_date_field is not None:
+        out = out.withColumn(f'{code}_post_delta',
+                             F.col(f'{code}_post_peak') - F.col(f'{code}_pre_peak'))
+    return out

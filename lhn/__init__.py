@@ -81,6 +81,7 @@ from lhn.analytics import (
     count_and_pivot,
     aggregate_fields,
     aggregate_fields_count,
+    distill_labs,
     groupCount
 )
 
@@ -150,6 +151,7 @@ __all__ = [
     'count_and_pivot',
     'aggregate_fields',
     'aggregate_fields_count',
+    'distill_labs',
     'groupCount',
     # Plotting (restored from v0.1.0)
     'plotByTime',
