@@ -37,22 +37,41 @@ python $HARNESS/hdl_run.py <notebook>.txt \
   --validate
 ```
 
-### 1. Confirm column names; don't guess
+### 1. Confirm column names when authoring — the notebook just uses them
 
-Resolve the real column name from the catalog (the harness derives the exact columns of
-every `r.*`/`e.*`/`d.*` ref) and reference it directly. No candidate-list guessing, no
-optional-source hedging.
+**This is a directive for *writing* the notebook, not code to put *in* it.** There is
+definitive metadata for every table — the Spark catalog (`r.*`/`e.*`/`d.*`/`o.*`, which the
+hdl-harness records) and the `targets` schema. Confirm the real column names against that
+metadata **as you write**; then the notebook simply uses them.
+
+These are **readable analysis notebooks**, not production jobs — keep them clean. Do **not**
+put column-name *handling* in the notebook: no discovery / print-the-columns cells, no
+defensive `pick_col`/`getattr` resolution, and no "confirmed from catalog / verify, don't
+assume" commentary. The metadata is the record of column names; the notebook neither
+re-verifies nor re-documents them.
 
 ```python
-# BAD — defensive multi-name guessing / getattr hedging of an "optional" source
+# BAD — code that accounts for column-name possibilities, or verifies in the notebook
 def pick_col(df, candidates, label): ...
 code = pick_col(proc, ['procedurecode_standard_id', 'procedure_code', 'code'], 'code')
 item = getattr(e, name, None)
+print(proc.columns)   # "verify, don't assume" is YOUR job while authoring, not the notebook's
 
-# GOOD — confirmed from the catalog, referenced directly
-PROC_CODE = 'procedurecode_standard_id'          # confirmed: r.procedureSource
-df = r.procedureSource.df.filter(F.col(PROC_CODE).isin(codes))
+# GOOD — you confirmed the name from the metadata; just use it
+df = r.procedureSource.df.filter(F.col('procedurecode_standard_id').isin(codes))
 ```
+
+**Keep the source tables' real column names** — even long ones like
+`typedvalue_numericValue_value`. For tables created by **others** (the RWD/OMOP sources),
+people familiar with the data recognize those names, and the long name itself shows the
+struct hierarchy; a simpler *alias they don't recognize* frustrates a knowledgeable reader
+more than a complex name they do. Use the actual name **inline**, not behind a `LAB_VAL`-style
+alias. (Columns **your** pipeline creates can use whatever names you give them.)
+
+If you genuinely need a source column renamed, do it in **`config-RWD.yaml`** (the flatten
+config — `colsRename`/`insert`), **not** via a per-notebook alias. Then the new name is
+recorded in the metadata and every notebook sees the same name; the flatten parity stays
+intact. Renaming is a config/metadata concern, never a notebook one.
 
 ### 2. Use lhn methods — don't hand-roll what the package does
 
