@@ -351,6 +351,52 @@ lab_summary = aggregate_fields(
 )
 ```
 
+### Step 4: Distill to person-level (the PySpark → R/CSV bridge)
+
+Labs are the canonical case where the per-cohort record set is **too large to export
+as a raw CSV** — many results per person. Before the data crosses to R (`targets` reads
+`inst/extdata/<project>/*.csv`), reduce the long lab table to **one row per person**.
+Use `distill_labs` — it encodes the best-practice reduction (don't hand-roll a
+`groupBy().agg(...)`):
+
+```python
+from lhn import distill_labs
+
+# value_field must already be NUMERIC and in ONE harmonized unit (unit conversion is
+# assay-specific — see the troponin troponinLabsStd harmonization). Flag bad rows so a
+# corrupt value can't win the peak. Optional index_date_field gives a pre/post split.
+hs = distill_labs(
+    df=e.troponinLabsStd.df,
+    loinc_field='labcode_standard_id',
+    loincs=['89579-7', '89577-1', '89578-9'],   # hs-cTnI
+    value_field='troponin_value_ngL',
+    date_field='datetimeLab',
+    index=['personid', 'tenant'],
+    index_date_field='pci_date',                 # join the per-person index date on first
+    invalid_field='troponin_value_ngL_invalid',
+    code='hs_tni',
+)
+# -> hs_tni_n/min/max/median/peak/first_date/last_date, and (with index_date_field)
+#    hs_tni_pre_peak/post_peak/post_delta/pre_n/post_n/post_first_date/post_last_date.
+
+# Join the human-readable lab name (LOINC -> name) from labs_factable, then export:
+e.hs_troponin.df = hs
+e.hs_troponin.to_csv()
+```
+
+**Distillation best practices (what `distill_labs` enforces):**
+1. **Filter to the cohort first** (`entityExtract(cohort=...)`) — don't distill the world.
+2. **Harmonize units up front** — LOINC does not identify the instrument; a calibrated
+   absolute value is only valid within one assay. Convert to one unit and **flag invalid**
+   (negative/implausible) rows; they are dropped so they can't win the peak.
+3. **Reduce to person grain** — count, min, max, median, peak, first/last date; and a
+   **pre/post-index split** (baseline vs post-event peak + delta) when there's an index date.
+4. **Carry the LOINC name** (join `labs_factable`) so the R side has readable columns.
+5. **Only then `to_csv()`** — the distilled table is small enough for the bridge.
+
+> `distill_labs` is new (lhn ≥ this version); **smoke-test it on HDL (Spark 2.4)** before
+> relying on it — the median uses `percentile_approx` via `F.expr`.
+
 ---
 
 ## Pattern 4: Encounter-Based Usage Analysis
