@@ -418,9 +418,9 @@ def groupCount(df, field, id='personid'):
     return result
 
 
-def distill_labs(df, loinc_field, loincs, value_field, date_field,
+def distill_labs(df, value_field, date_field, loinc_field=None, loincs=None,
                  index=None, index_date_field=None, invalid_field=None,
-                 code='lab'):
+                 unit_field=None, post_window_days=None, code='lab'):
     """Distill a long lab table to ONE row per person (the PySpark→R/CSV bridge).
 
     Labs are the canonical case where the per-cohort record set is too large to
@@ -440,12 +440,14 @@ def distill_labs(df, loinc_field, loincs, value_field, date_field,
 
     Produces, per ``index``:
       ``<code>_n``, ``<code>_min``, ``<code>_max``, ``<code>_median``,
-      ``<code>_peak`` (= max), ``<code>_first_date``, ``<code>_last_date``.
+      ``<code>_peak`` (= max), ``<code>_first_date``, ``<code>_last_date``;
+      and ``<code>_unit`` when ``unit_field`` is given.
     If ``index_date_field`` is given, also the pre/post split around that date (the
     post-PCI troponin pattern):
       ``<code>_pre_peak``, ``<code>_post_peak``, ``<code>_post_delta`` (post − pre),
       ``<code>_pre_n``, ``<code>_post_n``, ``<code>_post_first_date``,
-      ``<code>_post_last_date``.
+      ``<code>_post_last_date``. ``post_window_days`` bounds the post window to that
+      many days after the index date.
 
     Join human-readable lab names (LOINC → name) from ``labs_factable`` afterward.
 
@@ -454,36 +456,41 @@ def distill_labs(df, loinc_field, loincs, value_field, date_field,
 
     Args:
         df: Spark DataFrame of long lab rows (cohort-filtered).
-        loinc_field (str): column holding the LOINC code.
-        loincs (list): LOINC codes to keep.
         value_field (str): numeric, unit-harmonized value column.
         date_field (str): lab date column.
+        loinc_field (str): column holding the LOINC code (needed only with ``loincs``).
+        loincs (list): LOINC codes to keep; ``None`` = all rows (e.g. all assays).
         index (list): person grain (default ``['personid', 'tenant']``).
         index_date_field (str): optional index-date column on ``df`` for the
             pre/post split.
         invalid_field (str): optional boolean column; ``True`` rows are dropped.
+        unit_field (str): optional unit column to carry as ``<code>_unit``.
+        post_window_days (int): optional — bound the post window to N days after the
+            index date (requires ``index_date_field``).
         code (str): prefix for the output column names.
 
     Returns:
         Spark DataFrame keyed by ``index``, one row per person.
 
     Example:
-        >>> hs = distill_labs(e.troponinLabsStd.df,
+        >>> hs = distill_labs(trop_pci,
+        ...                   value_field='typedvalue_numericValue_value',
+        ...                   date_field='dateLab',
         ...                   loinc_field='labcode_standard_id',
         ...                   loincs=['89579-7', '89577-1', '89578-9'],
-        ...                   value_field='troponin_value_ngL',
-        ...                   date_field='datetimeLab',
-        ...                   index_date_field='pci_date',
+        ...                   index_date_field='index_pci',
         ...                   invalid_field='troponin_value_ngL_invalid',
-        ...                   code='hs_tni')
+        ...                   unit_field='typedvalue_unitOfMeasure_standard_primaryDisplay',
+        ...                   post_window_days=None, code='hs_tni')
     """
     index = list(index) if index else ['personid', 'tenant']
     drop_invalid = F.col(invalid_field) if invalid_field else F.lit(False)
     base = (df
-            .filter(F.col(loinc_field).isin(list(loincs)))
             .withColumn('_v', F.col(value_field).cast('double'))
             .withColumn('_d', F.to_date(F.col(date_field)))
             .filter(F.col('_v').isNotNull() & F.col('_d').isNotNull() & ~drop_invalid))
+    if loincs is not None:
+        base = base.filter(F.col(loinc_field).isin(list(loincs)))
 
     aggs = [
         F.count('_v').alias(f'{code}_n'),
@@ -494,10 +501,15 @@ def distill_labs(df, loinc_field, loincs, value_field, date_field,
         F.min('_d').alias(f'{code}_first_date'),
         F.max('_d').alias(f'{code}_last_date'),
     ]
+    if unit_field is not None:
+        aggs.append(F.first(F.col(unit_field), ignorenulls=True).alias(f'{code}_unit'))
 
     if index_date_field is not None:
         ref = F.to_date(F.col(index_date_field))
-        is_pre, is_post = (F.col('_d') < ref), (F.col('_d') >= ref)
+        is_pre = F.col('_d') < ref
+        is_post = F.col('_d') >= ref
+        if post_window_days is not None:
+            is_post = is_post & (F.datediff(F.col('_d'), ref) <= post_window_days)
         aggs += [
             F.max(F.when(is_pre, F.col('_v'))).alias(f'{code}_pre_peak'),
             F.max(F.when(is_post, F.col('_v'))).alias(f'{code}_post_peak'),
