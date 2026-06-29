@@ -84,16 +84,23 @@ level — "is there a method for this whole step?", not only "is this column nam
 |---|---|
 | `e.X.df.groupBy([c]).count()` | `e.X.tabulate(group_cols=[c], order_by='count', show=True)` |
 | `.groupBy([c]).agg(F.countDistinct(...))` | `e.X.tabulate(group_cols=[c], count_distinct=[...])` |
-| `r.SRC.df.join(cohort).filter(F.col(code).isin(codes))` (filter a source to a code list for a cohort) | `e.Y.entityExtract(elementList=e.codes, entitySource=r.SRC.df, cohort=e.cohort)` — exact-code hash join, no driver `collect()` |
+| `e.codes.df.withColumnRenamed('code', '<x>code_standard_id')` to make an `entityExtract` join key match | the **`create_extract` VERIFY step** already emits the dictionary's column name + `group`: `e.codesVerified.create_extract(elementList=e.codes, elementListSource=d.<dict>.df)`. It also confirms the codes are correctly coded. **Never hand-rename to fix a join — add the verify step.** |
+| `r.SRC.df.join(cohort).filter(F.col(code).isin(codes))` (filter a source to a code list for a cohort) | `e.Y.entityExtract(elementList=e.codesVerified, entitySource=r.SRC.df, cohort=e.cohort)` — exact-code hash join, no driver `collect()` (uses the **verified** code list) |
 | per-person first/last date + count: `.groupBy([id]).agg(F.min/F.max(date), F.count())` | `e.X.write_index_table(inTable=...)` → `index_<code>` / `last_<code>` / `entries_<code>` (grain/date/`code` from config) |
 | per-person **lab** summary or pre/post-index peak: `.groupBy([id]).agg(F.max(F.when(pre/post,...)))` | `distill_labs(df, value_field, date_field, loincs=, index_date_field=, unit_field=, post_window_days=, code=)` |
 | per-person `.groupBy([id]).agg(F.min/max/avg/count(val))` | `aggregate_fields(df, index, values, aggfuncs, aggfunc_names)` |
 | `F.to_date(F.col('datetimeX'))` on an `r.*` flattened column | use the flatten's pre-made **`dateX`** column — `config-RWD.yaml` emits a `date<X>` for every `datetime<X>`; don't re-derive it |
 | `spark.read.csv(path)` | `e.X.load_csv_as_df()` (path from `csv:` in `000-control.yaml projectTables`) |
 
-The first three steps of most pipelines are the **three-step pattern**:
-`load_csv_as_df` (codes) → `entityExtract` (records) → `write_index_table` / `distill_labs`
-(person-level reduction). If your notebook hand-rolls any of those, it's a smell.
+Most extraction pipelines are the **load → verify → extract → reduce** chain:
+`load_csv_as_df` (codes) → **`create_extract`** (VERIFY the codes against the dictionary —
+confirms they are correctly coded AND emits them as the dictionary's column name, e.g.
+`procedurecode_standard_id` + `group`) → `entityExtract` (cohort records) →
+`write_index_table` / `distill_labs` (person-level reduction).
+**Do NOT skip `create_extract`.** Skipping the verify step forces a manual
+`withColumnRenamed` to fix the `entityExtract` join key (a smell) and loses the
+code-validity check. If your notebook hand-rolls any of these four steps — or hand-renames
+to make a join work — it's a smell.
 
 These are **ExtractItem** methods — call them on the item `e.X`, **not** on its DataFrame:
 
