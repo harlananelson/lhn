@@ -75,10 +75,24 @@ intact. Renaming is a config/metadata concern, never a notebook one.
 
 ### 2. Use lhn methods — don't hand-roll what the package does
 
-**Before you write ANY join / reduction / aggregation / date-derivation, scan this table.**
-The method almost always exists and is the optimized, tested path; reach for raw PySpark
-only when nothing fits. Checking happens at the *operation* level, not just the column
-level — "is there a method for this whole step?", not only "is this column name right?"
+**THE RULE: any line that is NOT a method call is a candidate reinvention. Before you write
+it, search the lhn API** (`~/projects/hdl-harness/docs/api_reference.md` + the method
+signatures and *their parameters*) **to see whether the functionality is already coded.** A
+raw `.filter` / `.select` / `.groupBy` / `.agg` / `.withColumnRenamed` / `F.to_date` /
+`collect()` / manual loop should make you **stop and check first**. It's usually already there
+— either as a **method** (`create_extract`, `entityExtract`, `write_index_table`,
+`distill_labs`, `tabulate`) **or as a parameter on one**:
+
+| You're tempted to write… | It's already a parameter |
+|---|---|
+| `.select(cols)` after an extract | `masterList=` (entityExtract) · `retained_fields=` (create_extract / write_index_table) |
+| `.filter(date between …)` or `.filter(date.isNotNull())` | `histStart=`/`histEnd=`/`histStop=` + `datefieldSource=` — a *start date also drops null/implausible dates* |
+| `.withColumnRenamed('code', '<x>code_standard_id')` | the `create_extract` verify step emits the dictionary's name (`sourceField`/`groupName`) |
+| `.filter(~F.col('invalid'))` before a peak | `invalid_field=` (distill_labs) |
+
+Checking happens at the **operation/line** level, not just the column level — "is there a
+method *or parameter* for this whole line?", not only "is this column name right?" Reach for
+raw PySpark only when nothing in the package covers it.
 
 | If you're about to write… | Use instead |
 |---|---|
