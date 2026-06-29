@@ -458,6 +458,21 @@ class ExtractItem(SharedMethodsMixin):
             elementIndex = getattr(elementList, 'indexFields',
                                    getattr(self, 'indexFields', ['personid']))
 
+        # Config-driven fallbacks: a call kwarg always wins, but when omitted these
+        # come from the ExtractItem's 000-control.yaml block (self.<key>), mirroring
+        # write_index_table's histStart/histEnd. Lets the notebook keep the call to just
+        # elementList/entitySource/cohort and put the date window + column set in config.
+        if datefieldSource is None:
+            datefieldSource = getattr(self, 'datefieldSource', None)
+        if histStart is None:
+            histStart = getattr(self, 'histStart', None)
+        if histStop is None:
+            histStop = getattr(self, 'histStop', None)
+        if datefieldElement is None:
+            datefieldElement = getattr(self, 'datefieldElement', None)
+        if masterList is None:
+            masterList = getattr(self, 'masterList', None)
+
         # Get the actual DataFrames
         if hasattr(elementList, 'df'):
             element_df = elementList.df
