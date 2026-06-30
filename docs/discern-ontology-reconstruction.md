@@ -17,6 +17,25 @@
   confirmed **it is present on current HDL**. So the mechanism runs on HDL today; this is
   reconstruction, not revival-from-nothing.
 
+## Gotchas / error modes [CONFIRMED] — `hdl/Projects/ontology/Testing Ontology Issues - Harlan Nelson.html`
+- **A concept name that does NOT exist in the loaded context → hard `Py4JJavaError`, NOT a graceful
+  `false`.** (Throws in `DiscernUdfs$HasAnyConceptInContextUdf` → `BroadcastableValueSets.hasCode`.)
+  Their example: `BLOOD_QUANTITATIVE_URINE_OBSYTPE` (typo for `OBSTYPE`) crashed the job; the
+  corrected spelling did not. **⇒ Every concept name MUST be validated against the ontology
+  (`standard_ontologies`/`tabulated_ontologies` for that context) BEFORE use. The tabulation/lookup
+  is therefore a prerequisite, not optional — you can never pass a guessed/typo'd name.**
+- **The error is LAZY** — `spark.sql(...)` builds fine; the action (`df.head()`/`count`) is what
+  throws. A query cell that "succeeds" proves nothing until forced.
+- **The code field is the STRUCT** — `has_*_concept*(conditioncode, …)` takes the whole code struct
+  (e.g. `labcode`, `conditioncode`), NOT `.standard.id`. (`.standard.primaryDisplay` is only for the
+  SELECT display.)
+- **A valid concept whose codes aren't in the data → 0 rows, no error** (distinct from the crash).
+- **`discern_root` version pairs with the context:** Colon-Cancer `5E259FD…` ↔ `discernontology/v1/`;
+  the testing notebook `D1EF6…` ↔ `discernontology/v2/`.
+- **Two UDF families** (both available after `push_discern`, which also broadcasts):
+  `has_concept`/`has_any_concept` (active context, no GUID) and
+  `has_concept_in_context`/`has_any_concept_in_context(code, array(...), 'GUID')` (context-qualified).
+
 ## The mechanism (extraction half)
 ### foresight `push_discern` [CONFIRMED] — `~/projects/hdl/foresight/discern.py:207`
 ```python
