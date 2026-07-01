@@ -130,6 +130,27 @@ first**; only **re-run the tabulation** if those concepts / the current schema a
   `ExtractItem`, wrapping `foresight.discern` + the standalone `query_flat_rwd` logic, against
   the **current** ontology schema.
 
+## hmi comorbidity concept → context mapping [CONFIRMED] — `hdl/inst/ontology_tabulation.csv`
+The local week-long tabulation (115,424 rows; 5,551 concepts; 33 contexts;
+`contextId, codingSystemId, conceptName, table, code, count, n, percent`) contains **all six**
+contract concepts, **pre-validated locally** (so none will trip the crash-on-nonexistent-name
+gotcha). Two contexts cover all six:
+
+| contract | conceptName | contextId | table |
+|---|---|---|---|
+| **hf** | `HEART_FAILURE_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
+| **afib** | `ATRIAL_FIBRILLATION_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
+| **prior_mi** | `MYOCARDIAL_INFARCTION_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
+| **ckd** | `CHRONIC_KIDNEY_DISEASE_CLIN` (+ `_STAGE_1..5_`) | `81CD81CC032542EB9500B80903523094` | condition |
+| **prior_pci** | `PERCUTANEOUS_CORONARY_INTERVENTION_PROC` | `81CD81CC…` / `671EF600…` | condition |
+| **prior_cabg** | `CORONARY_ARTERY_BYPASS_GRAFT_CLIN` / `_PROC` | `58FA49EF…` / `81CD81CC…` | condition |
+
+(Also present: `CORONARY_ARTERY_DISEASE_CLIN`, `ACUTE_CORONARY_SYNDROME_CLIN`.)
+**Supersedes the manual troponin/UMLS code-curation** — Discern defines these canonically. Target
+extraction per concept: `push_discern(context)` → `has_concept(conditioncode, '<CONCEPT>_CLIN')`
+filter on the condition source. Every name above is validated against the tabulation (the gotcha
+guardrail). Browse/validate more via the Rhino app over `ontology_tabulation.csv` (`hdl/shiny/`).
+
 ## Open questions (do not guess)
 1. ~~Wrapper binding~~ **[RESOLVED]** — `ExtractItem` config-wrappers via `setFunctionParameters`.
 2. ~~`conditionOnt` config block~~ **[RESOLVED]** — `hdl/Projects/Colon-Cancer/000-config.yaml`:
