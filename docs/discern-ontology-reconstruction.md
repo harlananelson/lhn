@@ -132,24 +132,29 @@ first**; only **re-run the tabulation** if those concepts / the current schema a
 
 ## hmi comorbidity concept → context mapping [CONFIRMED] — `hdl/inst/ontology_tabulation.csv`
 The local week-long tabulation (115,424 rows; 5,551 concepts; 33 contexts;
-`contextId, codingSystemId, conceptName, table, code, count, n, percent`) contains **all six**
-contract concepts, **pre-validated locally** (so none will trip the crash-on-nonexistent-name
-gotcha). Two contexts cover all six:
+`contextId, codingSystemId, conceptName, table, code, count, n, percent`) contains all six contract
+concepts, pre-validated (so none trips the crash-on-nonexistent-name gotcha).
 
-| contract | conceptName | contextId | table |
-|---|---|---|---|
-| **hf** | `HEART_FAILURE_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
-| **afib** | `ATRIAL_FIBRILLATION_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
-| **prior_mi** | `MYOCARDIAL_INFARCTION_CLIN` | `53EF3068AE8F4EDE9951DC170CBBE6DA` | condition |
-| **ckd** | `CHRONIC_KIDNEY_DISEASE_CLIN` (+ `_STAGE_1..5_`) | `81CD81CC032542EB9500B80903523094` | condition |
-| **prior_pci** | `PERCUTANEOUS_CORONARY_INTERVENTION_PROC` | `81CD81CC…` / `671EF600…` | condition |
-| **prior_cabg** | `CORONARY_ARTERY_BYPASS_GRAFT_CLIN` / `_PROC` | `58FA49EF…` / `81CD81CC…` | condition |
+**Why the tabulation matters: a concept lives in several contexts, and `count` (distinct people —
+identical across a context's coding systems) is there to pick the context with the MOST people.**
+`percent = count / n` where `n` is the cohort total. Best context per concept **by count**, from this
+(older) run (cohort n≈5,352; condition table unless noted):
 
-(Also present: `CORONARY_ARTERY_DISEASE_CLIN`, `ACUTE_CORONARY_SYNDROME_CLIN`.)
-**Supersedes the manual troponin/UMLS code-curation** — Discern defines these canonically. Target
-extraction per concept: `push_discern(context)` → `has_concept(conditioncode, '<CONCEPT>_CLIN')`
-filter on the condition source. Every name above is validated against the tabulation (the gotcha
-guardrail). Browse/validate more via the Rhino app over `ontology_tabulation.csv` (`hdl/shiny/`).
+| contract | conceptName | best contextId | count | note |
+|---|---|---|---|---|
+| **hf** | `HEART_FAILURE_CLIN` | `53EF3068…` | 132 | 53EF3068 (132) > `DD774BB7…` (128) |
+| **afib** | `ATRIAL_FIBRILLATION_CLIN` | `53EF3068…` | 154 | |
+| **prior_mi** | `MYOCARDIAL_INFARCTION_CLIN` | `53EF3068…` | 86 | |
+| **ckd** | `CHRONIC_KIDNEY_DISEASE_CLIN` | `81CD81CC…` | 159 | (+ `_STAGE_1..5_`) |
+| **prior_cabg** | `CORONARY_ARTERY_BYPASS_GRAFT_CLIN` | `58FA49EF…` | 45 | CLIN (45) ≫ `_PROC` (1) |
+| **prior_pci** | `PERCUTANEOUS_CORONARY_INTERVENTION_PROC` | `81CD81CC…`/`DD774BB7…` | 3 | ⚠ **LOW** — revisit (procedure table / different concept) |
+
+Counts are from an **OLD run on a specific cohort** — the current data will differ, so **re-tabulate
+on the target schema for exact picks**; the *ranking* (which context wins) is the durable signal.
+`push_discern` loads the whole context, so hf/afib/mi share one push (`53EF3068`), ckd another
+(`81CD81CC`). **Supersedes the manual troponin/UMLS code-curation.** Pick/validate contexts via the
+Rhino app's Concept → Context panel (shows `count`, sorted). The per-`codingSystemId` rows also let
+you inspect code-system overlap across contexts for a concept.
 
 ## Open questions (do not guess)
 1. ~~Wrapper binding~~ **[RESOLVED]** — `ExtractItem` config-wrappers via `setFunctionParameters`.
