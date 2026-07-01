@@ -16,6 +16,12 @@
 - The real dependency is the **`com.cerner.foresight` JAR on the Spark classpath** — Harlan
   confirmed **it is present on current HDL**. So the mechanism runs on HDL today; this is
   reconstruction, not revival-from-nothing.
+- **PROVEN end-to-end by the `099` smoke test (2026-07-01)** — raw foresight, no lhn:
+  `from foresight.discern import push_discern` imported; `push_discern(discern_context='5E259FD…',
+  discern_root='…/v1/', concepts=['COLORECTAL_CANCER_CLIN'])` returned OK; `has_concept(conditioncode,
+  'COLORECTAL_CANCER_CLIN')` ran on the **`conditioncode` struct** in `real_world_data_ed_feb_2026.condition`
+  — correctly `false` for 20 non-colorectal sampled rows, and `6,218,055` matching rows overall
+  (records, not distinct people — sanity-check scope on a later run with `COUNT(DISTINCT personid)`).
 
 ## Gotchas / error modes [CONFIRMED] — `hdl/Projects/ontology/Testing Ontology Issues - Harlan Nelson.html`
 - **A concept name that does NOT exist in the loaded context → hard `Py4JJavaError`, NOT a graceful
