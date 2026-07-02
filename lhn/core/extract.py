@@ -879,7 +879,15 @@ class ExtractItem(SharedMethodsMixin):
         elif flags_cfg:
             # Full context per distinct GUID (concepts=None) — the proven 055
             # path. Subsetting is possible via the explicit discern_context arg.
-            for row in flags_cfg:
+            # Validate 'context' here too: push_discern may be called directly
+            # (not only via extract_concept_flags, which validates rows first),
+            # so guard against a bare KeyError on a malformed row.
+            for i, row in enumerate(flags_cfg):
+                if 'context' not in row:
+                    raise ValueError(
+                        "push_discern on '{}': concept_flags[{}] missing "
+                        "'context' (got {!r}).".format(
+                            getattr(self, 'name', 'unknown'), i, row))
                 to_push.setdefault(row['context'], None)
         elif getattr(self, 'discern_context', None):
             to_push[self.discern_context] = (
@@ -1004,6 +1012,13 @@ class ExtractItem(SharedMethodsMixin):
                 "extract_concept_flags on '{}': source has no DataFrame "
                 "(got {}). Ensure the source table exists / was built.".format(
                     name, type(source_df).__name__))
+        # The code column is interpolated raw into F.expr (it's an identifier, not
+        # a quotable literal), so validate it exists — a typo becomes a clear
+        # message here instead of an opaque Spark parse error in the aggregate.
+        if code not in source_df.columns:
+            raise ValueError(
+                "extract_concept_flags on '{}': code column '{}' not found in "
+                "source (columns: {}).".format(name, code, source_df.columns))
 
         # Cohort-bound the scan (inner join on index_fields), if configured.
         # Matches raw 055: cohort members with zero source rows are absent (not
