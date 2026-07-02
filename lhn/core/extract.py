@@ -1053,3 +1053,117 @@ class ExtractItem(SharedMethodsMixin):
             self.df = result
             self._auto_write()
         return result
+
+    def extract_concept_events(self, source, cohort=None, index_fields=None,
+                               code=None, concept_flags=None, datefield=None,
+                               retained_fields=None, push=True, set_self_df=True):
+        """
+        Record-level (dated) counterpart of :meth:`extract_concept_flags`.
+
+        Keeps the SOURCE rows whose ``code`` struct resolves to a configured
+        ``{flag, concept, context}`` mapping (via ``has_concept_in_context``),
+        tagged with a ``flag`` column naming which concept matched. Unlike
+        ``extract_concept_flags`` it does NOT aggregate — it emits one output row
+        per matching source row — so a downstream step can compare each event's
+        ``datefield`` to an index date (e.g. build a ``prior_*`` "event before
+        the index" flag in the R analytic layer, as ``pciEvents`` feeds
+        ``prior_pci``).
+
+        Output columns: ``index_fields`` + ``datefield`` + ``flag`` (+ any
+        ``retained_fields`` present in the source).
+
+        Parameters mirror :meth:`extract_concept_flags`, plus:
+            datefield (str | None): date column to retain from ``source`` (e.g.
+                ``effectivedate``). Falls back to ``self.datefieldPrimary``.
+            retained_fields (list[str] | None): extra source columns to keep.
+                Falls back to ``self.retained_fields`` (default: none).
+
+        Same crash-on-unknown-concept caveat as ``extract_concept_flags``: every
+        concept/context pair MUST be validated against the tabulation. The
+        cohort join uses only the person-level ``index_fields`` present in the
+        cohort table (so an ``encounterid`` in ``index_fields`` doesn't break it).
+        """
+        name = getattr(self, 'name', 'unknown')
+        index_fields = (index_fields if index_fields is not None
+                        else getattr(self, 'indexFields', ['personid', 'tenant']))
+        code = (code if code is not None
+                else getattr(self, 'conditionCodefield', 'conditioncode'))
+        datefield = (datefield if datefield is not None
+                     else getattr(self, 'datefieldPrimary', None))
+        retained_fields = (retained_fields if retained_fields is not None
+                           else getattr(self, 'retained_fields', []) or [])
+        flags = (concept_flags if concept_flags is not None
+                 else getattr(self, 'concept_flags', None))
+        if not flags:
+            raise ValueError(
+                "extract_concept_events on '{}': no concept_flags (need a list "
+                "of {{flag, concept, context}} dicts, in config or as an "
+                "arg).".format(name))
+        for i, row in enumerate(flags):
+            missing = [k for k in ('flag', 'concept', 'context') if k not in row]
+            if missing:
+                raise ValueError(
+                    "extract_concept_events on '{}': concept_flags[{}] missing "
+                    "keys {} (got {!r}).".format(name, i, missing, row))
+
+        if push:
+            self.push_discern(concept_flags=flags)
+
+        source_df = source.df if hasattr(source, 'df') else source
+        if not isinstance(source_df, DataFrame):
+            raise ValueError(
+                "extract_concept_events on '{}': source has no DataFrame "
+                "(got {}).".format(name, type(source_df).__name__))
+        if code not in source_df.columns:
+            raise ValueError(
+                "extract_concept_events on '{}': code column '{}' not found in "
+                "source (columns: {}).".format(name, code, source_df.columns))
+        # Fail loud on a missing datefield rather than silently dropping it (the whole
+        # point of this method is the date, e.g. for a downstream prior_* comparison).
+        if datefield is not None and datefield not in source_df.columns:
+            raise ValueError(
+                "extract_concept_events on '{}': datefield '{}' not found in "
+                "source (columns: {}).".format(name, datefield, source_df.columns))
+
+        # Cohort-bound with only the person-level keys the cohort actually has
+        # (index_fields may include encounterid, which persontenant lacks).
+        cohort = cohort if cohort is not None else getattr(self, 'cohort', None)
+        if cohort is not None:
+            cohort_df = cohort.df if hasattr(cohort, 'df') else cohort
+            if isinstance(cohort_df, str):
+                cohort_df = spark.table(cohort_df)
+            join_keys = [k for k in index_fields if k in cohort_df.columns]
+            cohort_keys = cohort_df.select(*join_keys).distinct()
+            source_df = source_df.join(cohort_keys, on=join_keys, how='inner')
+
+        # SQL-registered UDF -> F.expr string (Spark 2.4.4, no F.call_udf). Escape
+        # single quotes in the literals (see extract_concept_flags).
+        def _lit(value):
+            return str(value).replace("'", "''")
+
+        keep = list(index_fields)
+        if datefield and datefield not in keep:
+            keep.append(datefield)
+        for rf in retained_fields:
+            if rf not in keep:
+                keep.append(rf)
+
+        parts = []
+        for row in flags:
+            matched = source_df.filter(
+                "has_concept_in_context({code}, '{concept}', '{context}')".format(
+                    code=code, concept=_lit(row['concept']),
+                    context=_lit(row['context']))
+            ).withColumn('flag', F.lit(row['flag']))
+            select_cols = [c for c in keep if c in matched.columns] + ['flag']
+            parts.append(matched.select(*select_cols))
+        # All parts share the same schema (same select), so a plain unionByName is
+        # safe on Spark 2.4.4 (no allowMissingColumns needed).
+        result = parts[0]
+        for extra in parts[1:]:
+            result = result.unionByName(extra)
+
+        if set_self_df:
+            self.df = result
+            self._auto_write()
+        return result
