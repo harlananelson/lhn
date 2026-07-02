@@ -9,6 +9,67 @@
 > Goal: revive the Cerner Discern ontology query + the schema-wide ontology *tabulation*
 > on current HDL (HealtheDataLab), and fold the working pieces into current `lhn`.
 
+## ⇒ HANDOFF — where we are, where we're going (updated 2026-07-02)
+
+**Goal now:** implement Discern **inside the `lhn` package** so the *standard config-driven lhn
+workflow* works with Discern available — notebooks call `e.<item>.push_discern(config)` +
+`e.<item>.query_flat_rwd(source, schema)` (idiomatic `ExtractItem` methods), NOT raw `foresight`
+SQL. Then ontology pulls look like every other lhn extraction, just with Discern on tap.
+
+### DONE (all proven on live HDL)
+1. **Mechanism mapped + proven.** `foresight.push_discern` + `has_concept` /
+   `has_concept_in_context` run on current HDL (the `com.cerner.foresight` JAR is live). Proof:
+   the `099` smoke test **and** the `055` real extraction both ran.
+2. **Concept discovery is local + ranked.** `hdl/inst/ontology_tabulation.csv` (115k rows) → pick
+   the context with the most **people** per concept. The six hmi comorbidity concepts + best
+   contexts are mapped (see "hmi comorbidity concept → context mapping" below).
+3. **A working RAW extraction exists & ran.** `hmi/hdl/extraction/055-Ontology-Comorbidities`:
+   6 concepts → person-level flags for the NSTEMI cohort → `hmi_rwd.ontologyComorbidities_nstemi_RWD`.
+   Cohort 594,823; counts sensible — **mi 100%** (cohort-defining), hf 52.9%, ckd 38.7%, afib 34.1%,
+   cabg 27.1%, pci 2.3%. All 3 contexts loaded under **v1**; `conditioncode` is the struct; date
+   cols `effectivedate/asserteddate/statusdate` confirmed.
+4. **Rhino browser** over the tabulation: `hdl/shiny/ontology-rhino/`.
+
+### NEXT (the actual task: fold into lhn)
+1. **Port two methods into the current lhn `ExtractItem`** (`~/projects/lhn/lhn/core/extract.py` —
+   today it has `properties` but NOT these):
+   - `push_discern(self, config_dict)` and `query_flat_rwd(self, source, schema)`. **The exact
+     working bodies are in `~/projects/hdl/python/hnelson3.py`, class `ExtractItem`, ~lines 4731
+     and 4767**, plus the standalone `query_flat_rwd` and the `setFunctionParameters` helper. They
+     are thin config-wrappers over `foresight.discern` — see "The wrapper layer [CONFIRMED]" below
+     (bodies quoted).
+   - The `ExtractItem` must read `discern_context`, `concepts`, `conditionCodefield`, `location`,
+     `datefieldPrimary`, `datefields` from its `000-control.yaml` block (see the `conditionOnt`
+     example below).
+   - `from foresight.discern import push_discern` must be importable in the lhn env on HDL (it is —
+     `099` imported it). Do **not** vendor foresight; it's a platform SDK behind the JVM JAR.
+2. **Rewrite `055` the idiomatic way** — a `conditionOnt`-style `ExtractItem` per concept/context in
+   `000-control.yaml`, then `e.X.push_discern()` + `e.X.query_flat_rwd()`. The RAW `055` is the
+   reference for *what the SQL must do* (`has_concept_in_context(conditioncode_struct, CONCEPT, CTX)`).
+3. **Wire `ontologyComorbidities` into `hmi/hdl/_targets.R`** — left-join to the full cohort (fill
+   non-matches to 0) + compute `prior_mi`/`prior_pci`/`prior_cabg` from `effectivedate` vs the STEMI
+   index date, off the existing `build_comorbidity_flags` / `build_prior_flags`.
+4. (Deferred) tabulation reconstruction — which of the many `call_add_ontology_count*` is canonical;
+   only needed to RE-tabulate on a new schema (the existing CSV already covers hmi).
+
+### Read first, in order
+1. **This whole doc** — mechanism, gotchas, mapping.
+2. `~/projects/hdl/python/hnelson3.py` — `ExtractItem.push_discern` / `query_flat_rwd` (port source).
+3. `~/projects/hdl/foresight/discern.py` — the SDK (push_discern → JVM; UDF families).
+4. `hmi/hdl/extraction/055-Ontology-Comorbidities.txt` + its rendered `.md` (in txtarchivetransfer).
+5. `~/projects/lhn/lhn/core/extract.py` — the class to extend.
+
+### Landmines (full detail in "Gotchas" below)
+- A concept name **not in the loaded context CRASHES** (Py4JJavaError), not FALSE → only pass names
+  validated against `ontology_tabulation.csv`.
+- The code arg is the **struct** (`conditioncode`), not `conditioncode_standard_id`.
+- `discern_root` **v1** is proven for every context used so far; a `push_discern` failure ⇒ try v2.
+- **Commit identities:** lhn = **GitHub** (default id + Claude trailer); hmi/hdl = **Azure DevOps**
+  (`hnelson3@rwd.org`, **no** trailer). Deploy hmi notebooks via the **txtarchivetransfer** repo
+  (`hmi/` subdir) + `bash fetchupdate.sh` on HDL; render comes back as `.md` in that repo.
+
+---
+
 ## The platform fact that makes this feasible [CONFIRMED]
 - `push_discern` / `has_any_concept` are **Cerner `foresight`** (the HealtheIntent Discern SDK),
   not lhn. The lhn refactor (`lhn/ontology/discern.py`) is an **unreliable AI rewrite** that
