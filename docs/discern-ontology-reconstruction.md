@@ -30,27 +30,68 @@ SQL. Then ontology pulls look like every other lhn extraction, just with Discern
    cols `effectivedate/asserteddate/statusdate` confirmed.
 4. **Rhino browser** over the tabulation: `hdl/shiny/ontology-rhino/`.
 
-### NEXT (the actual task: fold into lhn)
-1. **Port two methods into the current lhn `ExtractItem`** (`~/projects/lhn/lhn/core/extract.py` —
-   today it has `properties` but NOT these):
-   - `push_discern(self, config_dict)` and `query_flat_rwd(self, source, schema)`. **The exact
-     working bodies are in `~/projects/hdl/python/hnelson3.py`, class `ExtractItem`, ~lines 4731
-     and 4767**, plus the standalone `query_flat_rwd` and the `setFunctionParameters` helper. They
-     are thin config-wrappers over `foresight.discern` — see "The wrapper layer [CONFIRMED]" below
-     (bodies quoted).
-   - The `ExtractItem` must read `discern_context`, `concepts`, `conditionCodefield`, `location`,
-     `datefieldPrimary`, `datefields` from its `000-control.yaml` block (see the `conditionOnt`
-     example below).
-   - `from foresight.discern import push_discern` must be importable in the lhn env on HDL (it is —
-     `099` imported it). Do **not** vendor foresight; it's a platform SDK behind the JVM JAR.
-2. **Rewrite `055` the idiomatic way** — a `conditionOnt`-style `ExtractItem` per concept/context in
-   `000-control.yaml`, then `e.X.push_discern()` + `e.X.query_flat_rwd()`. The RAW `055` is the
-   reference for *what the SQL must do* (`has_concept_in_context(conditioncode_struct, CONCEPT, CTX)`).
-3. **Wire `ontologyComorbidities` into `hmi/hdl/_targets.R`** — left-join to the full cohort (fill
+### REEVALUATION (2026-07-02) — what changed vs the original plan
+A fresh pass over the referenced files revised steps 1–2. Three findings:
+1. **The proven `055` never used `query_flat_rwd`.** It uses `has_concept_in_context(conditioncode,
+   CONCEPT, CONTEXT)` aggregated to person-level `MAX(IF(...))` across **6 concepts in 3 contexts**.
+   The standalone `query_flat_rwd` uses `has_any_concept(code, array(...))` — the **single active
+   context** UDF — which structurally cannot span 3 contexts in one pass. It was the wrong tool.
+2. **`ExtractItem.query_flat_rwd` (hnelson3) is latently broken.** Its body calls the standalone with
+   `config_dict={}` but never supplies the standalone's **required positional `startDate`/`stopDate`**,
+   and it drags a crufty dep web (`query_table`, `explode_columns`, hardcoded allergy field lists).
+   Porting it verbatim would import the bug + the wrong abstraction.
+3. **The "tabulation half" is already reconstructed** in `lhn/ontology/discern.py` (`summarizeCodes`,
+   `search_ontologies`, `extractConcepts`, `select_top_contextId`, `add_concept_indicators`). The
+   earlier "[OPEN]/deferred" framing under-credited the existing module.
+
+⇒ Implemented the **proven pattern** as the idiomatic primitive instead of `query_flat_rwd`.
+
+### DONE by the reevaluation (2026-07-02) — code written, HDL-run PENDING
+1. **Two methods added to current lhn `ExtractItem`** (`lhn/core/extract.py`):
+   - `push_discern(discern_context=None, discern_root=None, version=None, concepts=None)` — thin,
+     **lazy** wrapper over `foresight.discern.push_discern` (import inside the method so lhn still
+     imports off-HDL). Multi-context aware: pushes each distinct GUID from `self.concept_flags` (full
+     context, the proven path), or an explicit `discern_context`, or `self.discern_context`.
+   - `extract_concept_flags(source, cohort=None, ...)` — generalises `055`: per-person 0/1 flags via
+     `MAX(IF(has_concept_in_context(<code_struct>, '<concept>', '<context>'), 1, 0))` grouped over
+     `indexFields`, cohort-bounded, config-driven from a `concept_flags` list, auto-writes.
+   Both carry full docstrings (lhn review-gate: 100% public docstring coverage).
+2. **`055` rewritten to the idiomatic two-call form** (`hmi/hdl/extraction/055-Ontology-Comorbidities.txt`)
+   + a new **`ontologyComorbidities` block** in `hmi/hdl/000-control.yaml` carrying `concept_flags`
+   (the 6 {flag,concept,context}), `conditionCodefield: conditioncode`, `discern_root` (v1), `source`
+   (→ `hmi_rwd.ontologyComorbidities_nstemi_RWD`), and `inputs.source=r.conditionSource /
+   cohort=persontenant`. The notebook body is: `e.ontologyComorbidities.extract_concept_flags(
+   source=r.conditionSource, cohort=e.persontenant)`.
+   **PENDING:** deploy via txtarchivetransfer + `fetchupdate.sh` and run on HDL to confirm counts match
+   the raw run (cohort 594,823; mi 100%, hf 52.9%, ckd 38.7%, afib 34.1%, cabg 27.1%, pci 2.3%).
+   Cannot verify from off-HDL (no foresight JAR here).
+
+### Hardened after a 5-model review (2026-07-02)
+Reviewed by call-grok, call-claude(Fable-high), and AskSage (Claude-Opus, GPT-5.2,
+Gemini-2.5-Pro). All 5 independently flagged one real bug + robustness gaps; applied:
+- **BUG (unanimous):** `extract_concept_flags(concept_flags=<arg>, push=True)` never
+  forwarded the arg flags to `push_discern` → `ValueError`/wrong contexts. Fixed:
+  `push_discern` now takes a `concept_flags` param and `extract_concept_flags` passes
+  the resolved flags (full context per GUID).
+- SQL literals in the `has_concept_in_context` `F.expr` are now escaped (`'`→`''`).
+  *Rejected* Gemini's `F.call_udf` fix — it's Spark 3.5+, HDL is **Spark 2.4.4**.
+- Validate concept_flags rows (missing keys, duplicate/reserved flag names); fail-fast
+  `source.df` guard (mirrors entityExtract); `discern_version` preferred over `version`.
+- *Kept by design* (not bugs): inner-join to cohort (matches raw 055; `_targets.R`
+  left-joins + fills 0), and `has_concept_in_context` after `push_discern` (055-proven).
+
+### NEXT
+1. **Deploy + run `055` on HDL**, confirm the count parity above. If a `push_discern` fails for a
+   context, that GUID isn't in v1 — flip `discern_root` to `.../v2/` in `000-control.yaml`.
+2. **Wire `ontologyComorbidities` into `hmi/hdl/_targets.R`** — left-join to the full cohort (fill
    non-matches to 0) + compute `prior_mi`/`prior_pci`/`prior_cabg` from `effectivedate` vs the STEMI
-   index date, off the existing `build_comorbidity_flags` / `build_prior_flags`.
+   index date, off the existing `build_comorbidity_flags` / `build_prior_flags`. (Table name unchanged,
+   so this is independent of the lhn refactor.)
+3. (Optional) If the Colon-Cancer *record-level single-context* path is still needed, add a clean
+   `extract_concept_records` method (the correct replacement for `query_flat_rwd`) — NOT a verbatim port.
 4. (Deferred) tabulation reconstruction — which of the many `call_add_ontology_count*` is canonical;
-   only needed to RE-tabulate on a new schema (the existing CSV already covers hmi).
+   only needed to RE-tabulate on a new schema (the existing CSV already covers hmi; and the tabulation
+   half already lives in `lhn/ontology/discern.py`).
 
 ### Read first, in order
 1. **This whole doc** — mechanism, gotchas, mapping.
@@ -190,12 +231,12 @@ on HDL**. So for hmi (find concept+GUID for hf/ckd/afib/MI/CABG): **read the exi
 first**; only **re-run the tabulation** if those concepts / the current schema aren't already covered.
 (Schema has also drifted: `standard_ontologies.ontologies` is now 5 cols.)
 
-## Current-lhn gap (reconstruction target) [CONFIRMED]
-- Current `lhn` `ExtractItem` (`lhn/core/extract.py:45`) has `properties` but **no**
-  `push_discern` / `query_flat_rwd`. The refactor dropped them.
-- Reconstruction = add `push_discern` + `query_flat_rwd` (and the tabulation) to the current
-  `ExtractItem`, wrapping `foresight.discern` + the standalone `query_flat_rwd` logic, against
-  the **current** ontology schema.
+## Current-lhn gap (reconstruction target) — **CLOSED for the flag use case (2026-07-02)**
+- The refactor had dropped the extraction methods from `ExtractItem`. **Now added:**
+  `push_discern` + `extract_concept_flags` (see the reevaluation block up top). `query_flat_rwd`
+  was **deliberately not ported** (broken wrapper + wrong single-context abstraction for `055`).
+- Still open only if a **record-level single-context** extraction is needed (Colon-Cancer):
+  add `extract_concept_records` as the clean replacement — do not port `query_flat_rwd` verbatim.
 
 ## hmi comorbidity concept → context mapping [CONFIRMED] — `hdl/inst/ontology_tabulation.csv`
 The local week-long tabulation (115,424 rows; 5,551 concepts; 33 contexts;

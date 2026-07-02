@@ -793,3 +793,248 @@ class ExtractItem(SharedMethodsMixin):
                         list(self.pd.columns)))
             self.df = spark.createDataFrame(self.pd)
             self._auto_write()
+
+    def push_discern(self, discern_context=None, discern_root=None,
+                     version=None, concepts=None, concept_flags=None):
+        """
+        Broadcast one or more Cerner Discern ontology contexts to the Spark
+        cluster and register the Discern SQL UDFs for use in extraction queries.
+
+        After a successful push both UDF families are available: the
+        active-context ``has_concept`` / ``has_any_concept`` and the
+        context-qualified ``has_concept_in_context`` /
+        ``has_any_concept_in_context``. (On the current HDL foresight build,
+        ``push_discern`` also broadcasts the context, so the ``*_in_context``
+        UDFs work without a separate ``broadcast_discern`` — proven by the hmi
+        ``099`` smoke test and ``055`` extraction.)
+
+        Thin config-driven wrapper over ``foresight.discern.push_discern`` (the
+        Cerner HealtheIntent Discern SDK). ``foresight`` lives behind the
+        ``com.cerner.foresight`` JVM JAR on HDL only, so it is imported lazily —
+        ``lhn`` still imports fine in environments without it.
+
+        Contexts to push are resolved in this order:
+
+        1. ``discern_context`` arg — a GUID string or list of GUIDs. Each is
+           loaded with ``concepts`` (arg) or ``self.concepts``.
+        2. Else ``concept_flags`` (arg) or ``self.concept_flags`` (see
+           :meth:`extract_concept_flags`) — push each *distinct* context named
+           there. Each is loaded as a FULL context (``concepts=None``), matching
+           the proven ``055`` path. The arg is preferred so a caller who passes
+           ``concept_flags`` to ``extract_concept_flags`` pushes the RIGHT
+           contexts even when nothing is in config.
+        3. Else ``self.discern_context`` with ``self.concepts``.
+
+        Parameters:
+            discern_context (str | list[str] | None): Context GUID(s) to push.
+                Overrides config-derived contexts when given. When a list is
+                given with ``concepts``, the SAME subset applies to every
+                context (call once per context for per-context subsets).
+            discern_root (str | None): S3/HDFS root of the ontology export
+                (e.g. ``s3://.../discernontology/v1/``). Falls back to
+                ``self.discern_root``. If a push fails for a context, that
+                context is not in this root — try the ``.../v2/`` root.
+            version (str | None): Ontology version, passed through. Falls back
+                to ``self.discern_version`` then ``self.version`` (the latter
+                may carry an unrelated dataset version — prefer discern_version).
+            concepts (list[str] | None): Concept-name subset to load for the
+                ``discern_context`` path (memory reduction). Falls back to
+                ``self.concepts``. Not applied to the ``concept_flags`` path.
+            concept_flags (list[dict] | None): {flag, concept, context} rows;
+                if given, push each distinct ``context`` as a full context.
+                Takes precedence over ``self.concept_flags``.
+
+        Raises:
+            ImportError: If ``foresight`` is unavailable (i.e. not on HDL).
+            ValueError: If no context can be resolved from args or config.
+        """
+        try:
+            from foresight.discern import push_discern as _push_discern
+        except ImportError as ex:
+            raise ImportError(
+                "foresight.discern is unavailable — push_discern only runs on "
+                "HDL, where the com.cerner.foresight JAR is on the Spark "
+                "classpath (import error: {}).".format(ex))
+
+        root = coalesce(discern_root, getattr(self, 'discern_root', None))
+        # Prefer discern_version over version to avoid clobbering by an
+        # unrelated dataset-`version` config attribute on the item.
+        ver = version
+        if ver is None:
+            ver = coalesce(getattr(self, 'discern_version', None),
+                           getattr(self, 'version', None))
+
+        flags_cfg = (concept_flags if concept_flags is not None
+                     else getattr(self, 'concept_flags', None))
+
+        # Resolve {context: concepts_subset_or_None} to push.
+        to_push = {}
+        if discern_context is not None:
+            ctx_concepts = (concepts if concepts is not None
+                            else getattr(self, 'concepts', None))
+            ctxs = (discern_context if isinstance(discern_context, (list, tuple))
+                    else [discern_context])
+            for ctx in ctxs:
+                to_push[ctx] = ctx_concepts
+        elif flags_cfg:
+            # Full context per distinct GUID (concepts=None) — the proven 055
+            # path. Subsetting is possible via the explicit discern_context arg.
+            for row in flags_cfg:
+                to_push.setdefault(row['context'], None)
+        elif getattr(self, 'discern_context', None):
+            to_push[self.discern_context] = (
+                concepts if concepts is not None
+                else getattr(self, 'concepts', None))
+        else:
+            raise ValueError(
+                "push_discern on '{}': no discern_context passed and none in "
+                "config (need 'discern_context' or 'concept_flags').".format(
+                    getattr(self, 'name', 'unknown')))
+
+        for ctx, ctx_concepts in to_push.items():
+            _push_discern(spark, discern_context=ctx, version=ver,
+                          discern_root=root, concepts=ctx_concepts)
+            logger.info("push_discern OK: context=%s concepts=%s root=%s",
+                        ctx, ctx_concepts, root)
+
+    def extract_concept_flags(self, source, cohort=None, index_fields=None,
+                              code=None, concept_flags=None,
+                              push=True, set_self_df=True):
+        """
+        Build a person-level "ever present" flag table from Cerner Discern
+        ontology concepts — one 0/1 column per concept.
+
+        Generalises the proven raw-foresight pattern (hmi ``055``): for each
+        ``{flag, concept, context}`` mapping, emit
+        ``MAX(IF(has_concept_in_context(<code_struct>, '<concept>',
+        '<context>'), 1, 0)) AS <flag>`` aggregated over ``index_fields`` — 1
+        iff ANY of the entity's records in ``source`` resolves to that concept
+        in that context.
+
+        Why ``has_concept_in_context`` (explicit GUID) and not
+        ``has_any_concept`` (single active context): the flags can live in
+        DIFFERENT contexts (e.g. hf/afib/mi in one, ckd/pci in another), which a
+        single active-context query cannot span. The explicit-GUID form also
+        sidesteps the crash-on-unknown-concept gotcha — each concept is only
+        ever tested in its own validated context.
+
+        The mappings come from ``concept_flags`` (arg or ``self.concept_flags``),
+        a list of dicts::
+
+            concept_flags:
+              - {flag: hf,  concept: HEART_FAILURE_CLIN,           context: 53EF30...}
+              - {flag: ckd, concept: CHRONIC_KIDNEY_DISEASE_CLIN,  context: 81CD81...}
+
+        Every concept/context pair MUST be validated against the ontology
+        tabulation (``ontology_tabulation.csv`` / the ``tabulated_ontologies``
+        tables) beforehand: a concept name absent from its loaded context raises
+        a hard ``Py4JJavaError`` at action time, NOT a graceful ``false``.
+
+        Parameters:
+            source: Table to scan — an ExtractItem (``.df`` used) or a Spark
+                DataFrame. Must carry ``index_fields`` and the ``code`` STRUCT
+                column (e.g. ``conditioncode``, NOT ``conditioncode_standard_id``).
+            cohort: Optional ExtractItem / DataFrame / full ``schema.table``
+                string of ``index_fields`` to bound the scan to a cohort (inner
+                join). Falls back to ``self.cohort``. None scans all of ``source``.
+            index_fields (list[str] | None): Grouping keys. Falls back to
+                ``self.indexFields`` then ``['personid', 'tenant']``.
+            code (str | None): Name of the code STRUCT column. Falls back to
+                ``self.conditionCodefield`` then ``'conditioncode'``.
+            concept_flags (list[dict] | None): The flag mappings. Falls back to
+                ``self.concept_flags``.
+            push (bool): If True (default), call :meth:`push_discern` first to
+                broadcast every context named in ``concept_flags``.
+            set_self_df (bool): If True (default), assign the result to
+                ``self.df`` and auto-write to ``self.location``.
+
+        Returns:
+            pyspark.sql.DataFrame: One row per ``index_fields`` with one 0/1
+            column per flag.
+
+        Raises:
+            ValueError: If no ``concept_flags`` can be resolved; if any row is
+                missing a required key; if flag names are duplicated or collide
+                with ``index_fields``; or if ``source`` has no DataFrame.
+        """
+        name = getattr(self, 'name', 'unknown')
+        index_fields = (index_fields if index_fields is not None
+                        else getattr(self, 'indexFields', ['personid', 'tenant']))
+        code = (code if code is not None
+                else getattr(self, 'conditionCodefield', 'conditioncode'))
+        flags = (concept_flags if concept_flags is not None
+                 else getattr(self, 'concept_flags', None))
+        if not flags:
+            raise ValueError(
+                "extract_concept_flags on '{}': no concept_flags (need a list "
+                "of {{flag, concept, context}} dicts, in config or as an "
+                "arg).".format(name))
+
+        # Validate each row up front so a malformed config fails with a clear
+        # message (which row, which key) instead of a bare KeyError deep in the
+        # aggregate, and so duplicate/reserved flag names fail here rather than
+        # as an opaque "duplicate column" AnalysisException at write time.
+        flag_names = []
+        for i, row in enumerate(flags):
+            missing = [k for k in ('flag', 'concept', 'context') if k not in row]
+            if missing:
+                raise ValueError(
+                    "extract_concept_flags on '{}': concept_flags[{}] missing "
+                    "keys {} (got {!r}).".format(name, i, missing, row))
+            flag_names.append(row['flag'])
+        dupes = sorted({f for f in flag_names if flag_names.count(f) > 1})
+        clash = sorted(set(flag_names) & set(index_fields))
+        if dupes or clash:
+            raise ValueError(
+                "extract_concept_flags on '{}': flag names must be unique and "
+                "must not collide with index_fields {} — duplicates={}, "
+                "clashes={}.".format(name, index_fields, dupes, clash))
+
+        if push:
+            # Forward the RESOLVED flags so push broadcasts exactly the contexts
+            # this query will reference — correct even when flags came from the
+            # arg (not config). Full context per GUID (proven 055 path).
+            self.push_discern(concept_flags=flags)
+
+        source_df = source.df if hasattr(source, 'df') else source
+        # Fail fast on a missing source DataFrame (mirrors entityExtract): a
+        # None here otherwise surfaces as an opaque error deep in the join/agg.
+        if not isinstance(source_df, DataFrame):
+            raise ValueError(
+                "extract_concept_flags on '{}': source has no DataFrame "
+                "(got {}). Ensure the source table exists / was built.".format(
+                    name, type(source_df).__name__))
+
+        # Cohort-bound the scan (inner join on index_fields), if configured.
+        # Matches raw 055: cohort members with zero source rows are absent (not
+        # 0) — _targets.R left-joins the full cohort and fills 0 downstream.
+        cohort = cohort if cohort is not None else getattr(self, 'cohort', None)
+        if cohort is not None:
+            cohort_df = cohort.df if hasattr(cohort, 'df') else cohort
+            if isinstance(cohort_df, str):
+                cohort_df = spark.table(cohort_df)
+            cohort_keys = cohort_df.select(*index_fields).distinct()
+            source_df = source_df.join(cohort_keys, on=index_fields, how='inner')
+
+        # One MAX(IF(has_concept_in_context(...))) aggregate per flag. The UDF is
+        # SQL-registered by push_discern, so F.expr (a string) is the only way to
+        # call it on Spark 2.4.4 (no F.call_udf until 3.5). Escape single quotes
+        # in the literals so a concept name with an apostrophe can't break or
+        # inject the expression.
+        def _lit(value):
+            return str(value).replace("'", "''")
+
+        agg_exprs = [
+            F.max(F.expr(
+                "IF(has_concept_in_context({code}, '{concept}', '{context}'), "
+                "1, 0)".format(code=code, concept=_lit(row['concept']),
+                               context=_lit(row['context']))
+            )).alias(row['flag'])
+            for row in flags
+        ]
+        result = source_df.groupBy(*index_fields).agg(*agg_exprs)
+
+        if set_self_df:
+            self.df = result
+            self._auto_write()
+        return result
