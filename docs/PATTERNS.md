@@ -3,6 +3,13 @@
 This document describes common data pipeline patterns using the lhn package.
 Use these patterns as templates for building healthcare data extraction workflows.
 
+> **In progress — Discern ontology → lhn:** we are folding Cerner Discern
+> (`push_discern` + `has_concept` extraction) into the lhn `ExtractItem` so ontology pulls use the
+> standard config-driven workflow. Status, what's proven, and the exact next steps (port source
+> file + line numbers, gotchas, concept→context mapping) live in
+> **[`discern-ontology-reconstruction.md`](discern-ontology-reconstruction.md)** — read its top
+> "⇒ HANDOFF" section first.
+
 ## Overview: The Three-Step Extraction Pattern
 
 Most lhn pipelines follow this core pattern:
