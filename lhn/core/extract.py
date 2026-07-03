@@ -223,48 +223,74 @@ class ExtractItem(SharedMethodsMixin):
         self._df = value
         self._dirty = True
 
+    def write_safe(self):
+        """Persist ``self.df`` to ``self.location``, breaking the read→write lineage.
+
+        Use this (NOT :meth:`write`) whenever ``self.df`` derives from reading
+        ``self.location`` itself — e.g. you loaded the item's table, filtered/enriched
+        it, and want to persist the result back to the SAME table. A bare
+        :meth:`write` (a direct ``saveAsTable``) raises Spark's *"Cannot overwrite
+        table that is also being read from"* in that case; ``write_safe`` round-trips
+        through a uuid-named temp table so the target write reads the temp, not the
+        target.
+
+        This is the public, deliberate form of the lineage break the extract methods
+        (``entityExtract``, ``write_index_table``, ``create_extract``, …) do internally
+        via :meth:`_auto_write`. Unlike ``_auto_write`` it **raises** on failure, so a
+        caller that persists on purpose knows if the write did not happen.
+
+        Requires ``location`` and ``label``. Rebinds ``self.df`` to the persisted
+        table and clears the dirty flag. The temp table is always dropped.
+
+        Raises:
+            ValueError: If ``self.df`` is None, or ``location``/``label`` is missing.
+            Exception: Propagates any Spark write error (temp still cleaned up).
+        """
+        name = getattr(self, 'name', 'unknown')
+        if self._df is None:
+            raise ValueError(
+                "write_safe on '{}': no DataFrame to write.".format(name))
+        location = getattr(self, 'location', None)
+        label = getattr(self, 'label', None)
+        if not location or not label:
+            raise ValueError(
+                "write_safe on '{}': needs both location and label "
+                "(location={!r}, label={!r}).".format(name, location, label))
+        import uuid
+        # Unique per-call temp-table name so concurrent callers / retries don't collide.
+        temp_name = "{}_tmp_{}".format(location, uuid.uuid4().hex[:12])
+        try:
+            self._df.write.saveAsTable(temp_name, mode='overwrite')
+            temp_df = spark.table(temp_name)
+            writeTable(temp_df, location, description=label,
+                       partitionBy=getattr(self, 'partitionBy', None))
+            self._df = spark.table(location)
+            self._dirty = False
+            logger.info("write_safe wrote %s", location)
+        finally:
+            try:
+                spark.sql("DROP TABLE IF EXISTS {}".format(temp_name))
+            except Exception:
+                pass
+
     def _auto_write(self):
-        """Write self.df to Hive if location and label are configured.
+        """Best-effort auto-persist after an extract method sets self.df.
 
         Called by extract methods (create_extract, entityExtract, write_index_table,
-        dict2pyspark) after they set self.df. NOT called by the df setter — manual
-        df assignments don't auto-write (use .write() explicitly for those).
-
-        Before writing, creates a temporary table to break read-write lineage.
-        This avoids the Hive "Cannot overwrite table that is also being read from"
-        error that occurs when the new df was derived from the same table.
+        dict2pyspark, extract_concept_flags/events) — NOT by the df setter, so manual
+        df assignments don't auto-write. Delegates to :meth:`write_safe` (the temp-table
+        lineage break) but WARNS instead of raising, so a failed auto-write never aborts
+        a pipeline. For a deliberate lineage-safe persist that should surface errors, call
+        ``write_safe`` directly.
         """
         if (self._df is not None
                 and getattr(self, 'location', None)
                 and getattr(self, 'label', None)):
-            import uuid
-            # Unique per-call temp-table name so concurrent callers (and
-            # retries after failed writes) don't collide or leak.
-            temp_name = "{}_tmp_{}".format(self.location, uuid.uuid4().hex[:12])
             try:
-                # Break lineage: write to a temp table first, then overwrite target.
-                # This avoids "Cannot overwrite table being read from" when the new df
-                # was derived from reading the same table (e.g., lazy-loaded then filtered).
-                self._df.write.saveAsTable(temp_name, mode='overwrite')
-                temp_df = spark.table(temp_name)
-
-                partition = getattr(self, 'partitionBy', None)
-                writeTable(temp_df, self.location,
-                           description=self.label, partitionBy=partition)
-
-                self._df = spark.table(self.location)
-                # In-memory df now matches Hive; subsequent write_all can skip.
-                self._dirty = False
-                logger.info(f"Auto-wrote {self.location}")
+                self.write_safe()
             except Exception as ex:
-                logger.warning(f"Auto-write failed for {self.location}: {ex}")
-            finally:
-                # Always attempt cleanup — including in the failure path, so
-                # a botched auto-write doesn't leak temp tables on Hive.
-                try:
-                    spark.sql(f"DROP TABLE IF EXISTS {temp_name}")
-                except Exception:
-                    pass
+                logger.warning("Auto-write failed for %s: %s",
+                               getattr(self, 'location', '?'), ex)
     
     def write_index_table(self, inTable, histStart=None, histEnd=None,
                           indexLabel=None, lastLabel=None,
