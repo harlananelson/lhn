@@ -1444,6 +1444,89 @@ class ExtractItem(SharedMethodsMixin):
             self._auto_write()
         return counts
 
+    def build_ontology_coverage(self, source, concept_flags=None, codefield=None,
+                                group_by=None, datefield=None, set_self_df=True):
+        """Per (``group_by``, code): distinct-person count + whether the code maps to
+        ANY concept in the given Discern contexts — so the **UNMAPPED** codes
+        (``mapped = 0``) can be reviewed as a coverage gap.
+
+        The third leg alongside :meth:`build_datadict` (the full code inventory) and
+        :meth:`build_ontology_counts` (the concept view): this is the code inventory
+        **annotated with concept coverage**. When a cohort is designed from an ontology,
+        ``filter(mapped = 0)`` surfaces the codes present in the data that no concept
+        captures — the "did we miss anything?" review — and, over ``['tenant', 'year']``,
+        shows whether that gap shifts by site or drifts over time.
+
+        Args mirror :meth:`build_ontology_counts` (``concept_flags`` = ``{concept,
+        context}`` rows; ``codefield`` = the code STRUCT; ``group_by`` falls back to
+        ``self.groupBy`` then ``['tenant', 'year']``; ``datefield`` derives year/month).
+
+        Returns:
+            pyspark.sql.DataFrame: one row per (``group_by``, code fields) with ``count``
+            (distinct persons) and ``mapped`` (1 if the code maps to any concept, else 0).
+        """
+        name = getattr(self, 'name', 'unknown')
+        group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
+        flags = (concept_flags if concept_flags is not None
+                 else getattr(self, 'concept_flags', None))
+        if not flags:
+            raise ValueError(
+                "build_ontology_coverage on '{}': no concept_flags.".format(name))
+        for i, row in enumerate(flags):
+            miss = [k for k in ('concept', 'context') if k not in row]
+            if miss:
+                raise ValueError(
+                    "build_ontology_coverage on '{}': concept_flags[{}] missing {} "
+                    "({!r}).".format(name, i, miss, row))
+        codefield = (codefield or getattr(self, 'codefield', None)
+                     or getattr(self, 'conditionCodefield', None))
+        if not codefield:
+            raise ValueError(
+                "build_ontology_coverage on '{}': no codefield.".format(name))
+        datefield = datefield if datefield is not None else getattr(
+            self, 'datefieldPrimary', None)
+        person = getattr(self, 'personIndex', None) or 'personid'
+        if isinstance(person, (list, tuple)):
+            person = person[0]
+
+        self.push_discern(concept_flags=flags)
+
+        df = source.df if hasattr(source, 'df') else source
+        if not isinstance(df, DataFrame):
+            raise ValueError(
+                "build_ontology_coverage on '{}': source has no DataFrame "
+                "(got {}).".format(name, type(df).__name__))
+        if codefield not in df.columns:
+            raise ValueError(
+                "build_ontology_coverage on '{}': codefield '{}' not in source "
+                "(columns: {}).".format(name, codefield, df.columns))
+        df = _derive_date_parts(df, datefield, group_by)
+
+        def _lit(v):
+            return str(v).replace("'", "''")
+
+        # mapped = 1 if the code maps to ANY concept in ANY context, else 0.
+        ors = ["IF(has_concept_in_context({code}, '{c}', '{ctx}'), 1, 0)".format(
+                   code=codefield, c=_lit(row['concept']), ctx=_lit(row['context']))
+               for row in flags]
+        mapped_expr = ors[0] if len(ors) == 1 else "GREATEST({})".format(", ".join(ors))
+        df = df.withColumn('mapped', F.expr(mapped_expr))
+
+        system = codefield + '_standard_codingSystemId'
+        code_dims = [c for c in (codefield + '_standard_id', system,
+                                 codefield + '_standard_primaryDisplay')
+                     if c in df.columns]
+        gb = [g for g in group_by if g in df.columns]
+        keys = gb + code_dims
+        result = df.groupBy(*keys).agg(
+            F.max('mapped').alias('mapped'),
+            F.countDistinct(person).alias('count'))
+
+        if set_self_df:
+            self.df = result
+            self._auto_write()
+        return result
+
 
 def _derive_date_parts(df, datefield, group_by):
     """Add ``year``/``month`` columns derived from ``datefield`` when ``group_by``
