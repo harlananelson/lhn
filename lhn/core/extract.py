@@ -1194,3 +1194,292 @@ class ExtractItem(SharedMethodsMixin):
             self.df = result
             self._auto_write()
         return result
+
+    def build_datadict(self, source, group_by=None, datefield=None,
+                       index_fields=None, pattern_strings=None,
+                       source_table=None, set_self_df=True):
+        """Build a LONG-form data-dictionary table: distinct-level counts of each
+        standard field in ``source``, grouped by ``group_by`` (e.g.
+        ``['tenant', 'year']``).
+
+        Generalizes the legacy ``metadata.py::createMeta`` — which was non-runnable
+        (empty ``pattern_strings`` -> zero output; ``for ti in len(...)`` etc.) and
+        had no year/tenant grouping — into an lhn ExtractItem method. It:
+
+        * WIRES ``pattern_strings`` into root discovery (the fatal empty-list bug);
+        * derives EVERY counting key from ``group_by`` (no hand-listed keys, so no
+          silent cross-tenant fan-out);
+        * expands multiple arrays one-at-a-time (``createMeta`` relied on the
+          unpackaged ``expand_arrays_in_df``; ``flattenTable`` can't do multi-array);
+        * emits ONE queryable long table keyed by ``(source_table, root_field,
+          *group_by, standard_id/codingSystemId/primaryDisplay, count)`` instead of
+          hundreds of per-(table, field) tables.
+
+        Args:
+            source: source table (DataFrame or object with ``.df``).
+            group_by (list[str] | None): grouping dimensions; falls back to
+                ``self.groupBy`` then ``['tenant', 'year']``. ``year``/``month`` in
+                it are derived from ``datefield`` when absent.
+            datefield (str | list[str] | None): date column(s) for year/month
+                (coalesce precedence if a list); falls back to
+                ``self.datefieldPrimary``.
+            index_fields (list[str] | None): retained for distinct counting; falls
+                back to ``self.indexFields`` then ``['personid', 'tenant']``.
+            pattern_strings (list[str] | None): standard-field suffixes for root
+                discovery; falls back to ``self.pattern_strings`` then the standard
+                set. MUST be non-empty (empty is the legacy zero-output bug).
+            source_table (str | None): value written into the ``source_table``
+                column; falls back to ``self.sourceTable`` then the item name.
+            set_self_df (bool): set ``self.df`` and auto-write (default True).
+
+        Returns:
+            pyspark.sql.DataFrame: long-form level counts by ``group_by``.
+        """
+        from spark_config_mapper import get_standard_id_elements, explode_single_array
+        from pyspark.sql.types import ArrayType
+        name = getattr(self, 'name', 'unknown')
+        group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
+        pattern_strings = (pattern_strings or getattr(self, 'pattern_strings', None)
+                           or ['standard.id', 'standard.codingSystemId',
+                               'standard.primaryDisplay', 'value', 'brandType'])
+        if not pattern_strings:
+            raise ValueError(
+                "build_datadict on '{}': pattern_strings is empty — root discovery "
+                "matches nothing and writes zero rows (the legacy createMeta "
+                "bug).".format(name))
+        index_fields = (index_fields or getattr(self, 'indexFields', None)
+                        or ['personid', 'tenant'])
+        datefield = datefield if datefield is not None else getattr(
+            self, 'datefieldPrimary', None)
+        source_table = (source_table or getattr(self, 'sourceTable', None) or name)
+
+        df = source.df if hasattr(source, 'df') else source
+        if not isinstance(df, DataFrame):
+            raise ValueError(
+                "build_datadict on '{}': source has no DataFrame (got {}).".format(
+                    name, type(df).__name__))
+        df = _derive_date_parts(df, datefield, group_by)
+
+        # Explode arrays one at a time so multi-array RWD tables (condition,
+        # medication_administration) don't error or drop nested standard fields.
+        guard = 0
+        while any(isinstance(f.dataType, ArrayType) for f in df.schema.fields) and guard < 25:
+            arr = next(f.name for f in df.schema.fields
+                       if isinstance(f.dataType, ArrayType))
+            df = explode_single_array(df, arr, flatten=True)
+            guard += 1
+
+        flat_columns = df.columns
+        roots = get_standard_id_elements(flat_columns, pattern_strings)  # WIRED
+        if not roots:
+            logger.warning("build_datadict on '%s': no standard root fields matched "
+                           "%s in %s.", name, pattern_strings, source_table)
+
+        gb = [g for g in group_by if g in df.columns]
+        level_map = [('_standard_id', 'standard_id'),
+                     ('_standard_codingSystemId', 'standard_codingSystemId'),
+                     ('_standard_primaryDisplay', 'standard_primaryDisplay')]
+        frames = []
+        for root in roots:
+            renames, level_cols = [], []
+            for suffix, canon in level_map:
+                match = None
+                for c in flat_columns:
+                    if c.lower().endswith((root + suffix).lower()):
+                        match = c
+                        break
+                if match is not None:
+                    renames.append((match, canon))
+                    level_cols.append(canon)
+            if not level_cols:
+                continue
+            sub = df.select(*(gb + [r[0] for r in renames]))
+            for src_c, canon in renames:
+                sub = sub.withColumnRenamed(src_c, canon)
+            keys = gb + level_cols
+            counted = (sub.select(*keys).distinct().groupBy(*keys).count()
+                       .withColumn('source_table', F.lit(source_table))
+                       .withColumn('root_field', F.lit(root)))
+            frames.append(counted)
+
+        result = _union_aligned(frames)
+        if result is None:
+            result = df.select(*gb).limit(0)
+        if set_self_df:
+            self.df = result
+            self._auto_write()
+        return result
+
+    def build_ontology_counts(self, source, concept_flags=None, codefield=None,
+                              group_by=None, sample_n=None, datefield=None,
+                              set_self_df=True):
+        """Tabulate Discern concept / coding-system / code counts + percents per
+        ``group_by`` (e.g. ``['tenant', 'year']``) x concept — Spark-native, no pandas.
+
+        Generalizes ``add_ontology_count_new`` (single-context, pandas, year/month
+        only, hand-listed merge keys). It:
+
+        * pushes EVERY distinct context via :meth:`push_discern` (so concepts under a
+          2nd context aren't silently false);
+        * derives EVERY grouping and join key from ``group_by`` (the script's
+          hardcoded ``['year','month']`` merges next to a ``dateGroupingFields`` param
+          are the drift this prevents — a missed key fans the inner join out ACROSS
+          tenants, silently doubling counts);
+        * uses a per-``group_by`` denominator DataFrame (not a scalar ``sample_n``),
+          so percents are interpretable per tenant-year;
+        * counts via the proven ``has_concept_in_context`` SQL path (same as
+          :meth:`extract_concept_flags`), staying in Spark end to end.
+
+        Args:
+            source: source table (DataFrame or object with ``.df``).
+            concept_flags (list[dict] | None): ``{concept, context}`` rows (``flag``
+                optional/ignored here); falls back to ``self.concept_flags``.
+            codefield (str | None): the code STRUCT column; falls back to
+                ``self.codefield`` then ``self.conditionCodefield``.
+            group_by (list[str] | None): grouping dims; falls back to ``self.groupBy``
+                then ``['tenant', 'year']``.
+            sample_n: per-group denominator — a DataFrame keyed by ``group_by`` with
+                an ``n`` column (or object with ``.df``). A scalar is accepted but
+                discouraged. If None, percents are omitted.
+            datefield (str | list[str] | None): date column(s) to derive year/month.
+            set_self_df (bool): set ``self.df`` and auto-write (default True).
+
+        Returns:
+            pyspark.sql.DataFrame: one row per (``group_by``, ``conceptName``, coding
+            system, code) with countBy/percentBy Concept, System, Code.
+        """
+        name = getattr(self, 'name', 'unknown')
+        group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
+        flags = (concept_flags if concept_flags is not None
+                 else getattr(self, 'concept_flags', None))
+        if not flags:
+            raise ValueError(
+                "build_ontology_counts on '{}': no concept_flags (list of "
+                "{{concept, context}} dicts).".format(name))
+        for i, row in enumerate(flags):
+            miss = [k for k in ('concept', 'context') if k not in row]
+            if miss:
+                raise ValueError(
+                    "build_ontology_counts on '{}': concept_flags[{}] missing {} "
+                    "({!r}).".format(name, i, miss, row))
+        codefield = (codefield or getattr(self, 'codefield', None)
+                     or getattr(self, 'conditionCodefield', None))
+        if not codefield:
+            raise ValueError(
+                "build_ontology_counts on '{}': no codefield.".format(name))
+        datefield = datefield if datefield is not None else getattr(
+            self, 'datefieldPrimary', None)
+        person = getattr(self, 'personIndex', None) or 'personid'
+        if isinstance(person, (list, tuple)):
+            person = person[0]
+
+        self.push_discern(concept_flags=flags)          # push every distinct context
+
+        df = source.df if hasattr(source, 'df') else source
+        if not isinstance(df, DataFrame):
+            raise ValueError(
+                "build_ontology_counts on '{}': source has no DataFrame "
+                "(got {}).".format(name, type(df).__name__))
+        if codefield not in df.columns:
+            raise ValueError(
+                "build_ontology_counts on '{}': codefield '{}' not in source "
+                "(columns: {}).".format(name, codefield, df.columns))
+        df = _derive_date_parts(df, datefield, group_by)
+
+        def _lit(v):
+            return str(v).replace("'", "''")
+
+        system = codefield + '_standard_codingSystemId'
+        code_dims = [c for c in (codefield + '_standard_id', system,
+                                 codefield + '_standard_primaryDisplay')
+                     if c in df.columns]
+        gb = [g for g in group_by if g in df.columns]
+        keep = [person] + gb + code_dims
+
+        # Melt: one filter+tag per concept, unioned (Spark 2.4.4 has no stack/melt).
+        parts = []
+        for row in flags:
+            expr = "has_concept_in_context({code}, '{c}', '{ctx}')".format(
+                code=codefield, c=_lit(row['concept']), ctx=_lit(row['context']))
+            parts.append(df.filter(F.expr(expr)).select(*keep)
+                         .withColumn('conceptName', F.lit(row['concept'])))
+        long = _union_aligned(parts)
+        if long is None:
+            raise ValueError(
+                "build_ontology_counts on '{}': no concepts produced rows.".format(name))
+
+        # Three distinct-person counts; EVERY key derives from group_by.
+        by_concept = long.groupBy(*(gb + ['conceptName'])).agg(
+            F.countDistinct(person).alias('countByConcept'))
+        sys_keys = gb + ['conceptName'] + ([system] if system in long.columns else [])
+        by_system = long.groupBy(*sys_keys).agg(
+            F.countDistinct(person).alias('countBySystem'))
+        code_keys = gb + ['conceptName'] + code_dims
+        by_code = long.groupBy(*code_keys).agg(
+            F.countDistinct(person).alias('countByCode'))
+
+        counts = (by_code
+                  .join(by_system, on=sys_keys, how='inner')
+                  .join(by_concept, on=(gb + ['conceptName']), how='inner'))
+
+        denom = sample_n.df if hasattr(sample_n, 'df') else sample_n
+        if isinstance(denom, DataFrame):
+            counts = counts.join(denom, on=gb, how='left')
+            for c in ('Concept', 'System', 'Code'):
+                counts = counts.withColumn(
+                    'percentBy' + c, F.col('countBy' + c) / F.col('n') * 100)
+        elif denom is not None:
+            for c in ('Concept', 'System', 'Code'):
+                counts = counts.withColumn(
+                    'percentBy' + c, F.col('countBy' + c) / F.lit(float(denom)) * 100)
+
+        if set_self_df:
+            self.df = counts
+            self._auto_write()
+        return counts
+
+
+def _derive_date_parts(df, datefield, group_by):
+    """Add ``year``/``month`` columns derived from ``datefield`` when ``group_by``
+    asks for them and they are absent. ``datefield`` may be one column or a list
+    (coalesce precedence). Null dates yield NULL year/month — a visible 'unknown'
+    group, not a silent drop. Shared by :meth:`ExtractItem.build_datadict` and
+    :meth:`ExtractItem.build_ontology_counts`."""
+    need = [p for p in ('year', 'month') if p in group_by and p not in df.columns]
+    if not need:
+        return df
+    if datefield is None:
+        raise ValueError(
+            "build_*: group_by needs {} but no datefield was given to derive them "
+            "and the columns are absent.".format(need))
+    fields = datefield if isinstance(datefield, (list, tuple)) else [datefield]
+    d = F.to_date(F.coalesce(*[F.col(c) for c in fields]))
+    if 'year' in need:
+        df = df.withColumn('year', F.year(d))
+    if 'month' in need:
+        df = df.withColumn('month', F.month(d))
+    return df
+
+
+def _union_aligned(frames):
+    """``unionByName`` a list of frames after aligning to the union of their columns
+    (Spark 2.4.4 has no ``allowMissingColumns``). Missing columns are added as NULL.
+    Returns None for an empty list. Shared by the ``build_*`` methods."""
+    frames = [f for f in frames if f is not None]
+    if not frames:
+        return None
+    all_cols = []
+    for f in frames:
+        for c in f.columns:
+            if c not in all_cols:
+                all_cols.append(c)
+    aligned = []
+    for f in frames:
+        for c in all_cols:
+            if c not in f.columns:
+                f = f.withColumn(c, F.lit(None))
+        aligned.append(f.select(*all_cols))
+    result = aligned[0]
+    for extra in aligned[1:]:
+        result = result.unionByName(extra)
+    return result
