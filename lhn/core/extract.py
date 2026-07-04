@@ -1340,7 +1340,8 @@ class ExtractItem(SharedMethodsMixin):
                 then ``['tenant', 'year']``.
             sample_n: per-group denominator — a DataFrame keyed by ``group_by`` with
                 an ``n`` column (or object with ``.df``). A scalar is accepted but
-                discouraged. If None, percents are omitted.
+                discouraged. If None (default), computed internally as distinct
+                persons per ``group_by`` from the source.
             datefield (str | list[str] | None): date column(s) to derive year/month.
             set_self_df (bool): set ``self.df`` and auto-write (default True).
 
@@ -1423,12 +1424,17 @@ class ExtractItem(SharedMethodsMixin):
                   .join(by_concept, on=(gb + ['conceptName']), how='inner'))
 
         denom = sample_n.df if hasattr(sample_n, 'df') else sample_n
+        if denom is None:
+            # Default per-group denominator: distinct persons with ANY record in each
+            # group (percent ~= prevalence among observably-active patients). Computed
+            # here so callers don't hand-roll it — keeps the group_by contract in one place.
+            denom = df.groupBy(*gb).agg(F.countDistinct(person).alias('n'))
         if isinstance(denom, DataFrame):
             counts = counts.join(denom, on=gb, how='left')
             for c in ('Concept', 'System', 'Code'):
                 counts = counts.withColumn(
                     'percentBy' + c, F.col('countBy' + c) / F.col('n') * 100)
-        elif denom is not None:
+        else:
             for c in ('Concept', 'System', 'Code'):
                 counts = counts.withColumn(
                     'percentBy' + c, F.col('countBy' + c) / F.lit(float(denom)) * 100)
