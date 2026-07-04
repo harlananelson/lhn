@@ -85,7 +85,8 @@ class Extract:
         By default this only writes items whose in-memory ``df`` differs
         from what was last persisted. Every extract method
         (``create_extract``, ``entityExtract``, ``write_index_table``,
-        ``dict2pyspark``, ``load_csv_as_df``) already calls
+        ``dict2pyspark``, ``extract_concept_flags``, ``extract_concept_events``)
+        already call
         ``_auto_write`` internally, so their outputs are skipped here —
         re-writing them would be identical bytes and cost the same as
         the first write. Items that had ``.df`` mutated directly
