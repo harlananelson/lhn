@@ -1235,8 +1235,9 @@ class ExtractItem(SharedMethodsMixin):
         Returns:
             pyspark.sql.DataFrame: long-form level counts by ``group_by``.
         """
-        from spark_config_mapper import get_standard_id_elements, explode_single_array
-        from pyspark.sql.types import ArrayType
+        from spark_config_mapper import (get_standard_id_elements, explode_single_array,
+                                          flat_schema, flattenTable)
+        from pyspark.sql.types import ArrayType, StructType
         name = getattr(self, 'name', 'unknown')
         group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
         pattern_strings = (pattern_strings or getattr(self, 'pattern_strings', None)
@@ -1259,53 +1260,75 @@ class ExtractItem(SharedMethodsMixin):
                 "build_datadict on '{}': source has no DataFrame (got {}).".format(
                     name, type(df).__name__))
         df = _derive_date_parts(df, datefield, group_by)
+        person = index_fields[0] if index_fields else 'personid'
+        # Fail loudly (not silently-across-tenants) if a requested key is missing.
+        need = group_by + [person]
+        missing = [c for c in need if c not in df.columns]
+        if missing:
+            raise ValueError(
+                "build_datadict on '{}': required columns {} not in source "
+                "(columns: {}).".format(name, missing, df.columns))
 
-        # Explode arrays one at a time so multi-array RWD tables (condition,
-        # medication_administration) don't error or drop nested standard fields.
+        # Discover root standard fields from the DOT-path schema. get_standard_id_elements
+        # matches dotted paths ('conditioncode.standard.id'), so it MUST see the nested
+        # names — NOT the underscore-flattened columns (feeding it flattened names was the
+        # bug that reproduced createMeta's zero-output).
+        roots_dot = get_standard_id_elements(flat_schema(df), pattern_strings)
+        if not roots_dot:
+            logger.warning("build_datadict on '%s': no standard root fields matched "
+                           "%s in %s.", name, pattern_strings, source_table)
+
+        # Flatten to underscore columns to select from: explode top-level arrays one at a
+        # time (each flattens), then flatten any remaining structs UNCONDITIONALLY — a
+        # struct-only source (e.g. `condition`) has no array to trigger the explode loop.
         guard = 0
         while any(isinstance(f.dataType, ArrayType) for f in df.schema.fields) and guard < 25:
             arr = next(f.name for f in df.schema.fields
                        if isinstance(f.dataType, ArrayType))
             df = explode_single_array(df, arr, flatten=True)
             guard += 1
+        if guard >= 25:
+            logger.warning("build_datadict on '%s': array-explode guard hit (25) — "
+                           "arrays may remain unflattened.", name)
+        if any(isinstance(f.dataType, StructType) for f in df.schema.fields):
+            df = flattenTable(df, error_on_multiple_arrays=False)
+        flat_cols = set(df.columns)
 
-        flat_columns = df.columns
-        roots = get_standard_id_elements(flat_columns, pattern_strings)  # WIRED
-        if not roots:
-            logger.warning("build_datadict on '%s': no standard root fields matched "
-                           "%s in %s.", name, pattern_strings, source_table)
-
-        gb = [g for g in group_by if g in df.columns]
-        level_map = [('_standard_id', 'standard_id'),
-                     ('_standard_codingSystemId', 'standard_codingSystemId'),
-                     ('_standard_primaryDisplay', 'standard_primaryDisplay')]
+        triple = [('standard_id', 'standard_id'),
+                  ('standard_codingSystemId', 'standard_codingSystemId'),
+                  ('standard_primaryDisplay', 'standard_primaryDisplay')]
         frames = []
-        for root in roots:
+        for root_dot in roots_dot:
+            root_u = root_dot.replace('.', '_')
             renames, level_cols = [], []
-            for suffix, canon in level_map:
-                match = None
-                for c in flat_columns:
-                    if c.lower().endswith((root + suffix).lower()):
-                        match = c
-                        break
-                if match is not None:
-                    renames.append((match, canon))
-                    level_cols.append(canon)
+            for suffix, canon in triple:
+                col = root_u + '_' + suffix        # EXACT name (no endswith mis-bind)
+                if col in flat_cols:
+                    renames.append((col, canon)); level_cols.append(canon)
+            if not level_cols:
+                # value/brandType-style root — use its leaf column as a generic value.
+                for cand in (root_u + '_value', root_u + '_brandType', root_u):
+                    if cand in flat_cols:
+                        renames.append((cand, 'value')); level_cols.append('value'); break
             if not level_cols:
                 continue
-            sub = df.select(*(gb + [r[0] for r in renames]))
+            sub = df.select(*(group_by + [person] + [r[0] for r in renames]))
             for src_c, canon in renames:
                 sub = sub.withColumnRenamed(src_c, canon)
-            keys = gb + level_cols
-            counted = (sub.select(*keys).distinct().groupBy(*keys).count()
+            # distinct PERSONS per (group_by, level) — the datadict "Subjects" count
+            # (distinct on the person key also makes sibling-array explosion harmless).
+            counted = (sub.groupBy(*(group_by + level_cols))
+                       .agg(F.countDistinct(person).alias('count'))
                        .withColumn('source_table', F.lit(source_table))
-                       .withColumn('root_field', F.lit(root)))
+                       .withColumn('root_field', F.lit(root_dot)))
             frames.append(counted)
 
         result = _union_aligned(frames)
         if result is None:
-            result = df.select(*gb).limit(0)
-        if set_self_df:
+            logger.warning("build_datadict on '%s': no roots resolved to level columns "
+                           "— empty result (check pattern_strings vs the source schema).", name)
+            result = df.select(*group_by).limit(0)
+        elif set_self_df:
             self.df = result
             self._auto_write()
         return result
@@ -1388,13 +1411,37 @@ class ExtractItem(SharedMethodsMixin):
         df = _derive_date_parts(df, datefield, group_by)
 
         def _lit(v):
-            return str(v).replace("'", "''")
+            # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
+            # parsed as adjacent-literal concatenation and silently drops the quote.
+            return str(v).replace("\\", "\\\\").replace("'", "\\'")
 
+        # Project the code dims from the STRUCT — the source is the RAW table (the UDF
+        # needs the struct), so the underscore columns don't exist yet. flat_schema gives
+        # the dotted paths; project the present ones as flat columns. Raise if none
+        # resolve rather than silently collapse the system/code breakdown.
+        from spark_config_mapper import flat_schema
+        dot_paths = set(flat_schema(df))
+        code_dims = []
+        for _sub, _suffix in (('standard.id', '_standard_id'),
+                              ('standard.codingSystemId', '_standard_codingSystemId'),
+                              ('standard.primaryDisplay', '_standard_primaryDisplay')):
+            if (codefield + '.' + _sub) in dot_paths:
+                _canon = codefield + _suffix
+                df = df.withColumn(_canon, F.col(codefield + '.' + _sub))
+                code_dims.append(_canon)
+        if not code_dims:
+            raise ValueError(
+                "build_ontology_*: no code dims resolved from struct '{}' (expected "
+                "'{}.standard.id' etc. in the source).".format(codefield, codefield))
         system = codefield + '_standard_codingSystemId'
-        code_dims = [c for c in (codefield + '_standard_id', system,
-                                 codefield + '_standard_primaryDisplay')
-                     if c in df.columns]
-        gb = [g for g in group_by if g in df.columns]
+        missing = [g for g in group_by if g not in df.columns]
+        if missing:
+            raise ValueError(
+                "build_ontology_*: group_by keys {} not in source.".format(missing))
+        if person not in df.columns:
+            raise ValueError(
+                "build_ontology_*: person key '{}' not in source.".format(person))
+        gb = group_by
         keep = [person] + gb + code_dims
 
         # Melt: one filter+tag per concept, unioned (Spark 2.4.4 has no stack/melt).
@@ -1430,6 +1477,8 @@ class ExtractItem(SharedMethodsMixin):
             # here so callers don't hand-roll it — keeps the group_by contract in one place.
             denom = df.groupBy(*gb).agg(F.countDistinct(person).alias('n'))
         if isinstance(denom, DataFrame):
+            # keep only the keys + n so a custom sample_n's extra columns don't leak in.
+            denom = denom.select(*[c for c in (gb + ['n']) if c in denom.columns])
             counts = counts.join(denom, on=gb, how='left')
             for c in ('Concept', 'System', 'Code'):
                 counts = counts.withColumn(
@@ -1503,7 +1552,9 @@ class ExtractItem(SharedMethodsMixin):
         df = _derive_date_parts(df, datefield, group_by)
 
         def _lit(v):
-            return str(v).replace("'", "''")
+            # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
+            # parsed as adjacent-literal concatenation and silently drops the quote.
+            return str(v).replace("\\", "\\\\").replace("'", "\\'")
 
         # mapped = 1 if the code maps to ANY concept in ANY context, else 0.
         ors = ["IF(has_concept_in_context({code}, '{c}', '{ctx}'), 1, 0)".format(
@@ -1512,11 +1563,33 @@ class ExtractItem(SharedMethodsMixin):
         mapped_expr = ors[0] if len(ors) == 1 else "GREATEST({})".format(", ".join(ors))
         df = df.withColumn('mapped', F.expr(mapped_expr))
 
+        # Project the code dims from the STRUCT — the source is the RAW table (the UDF
+        # needs the struct), so the underscore columns don't exist yet. flat_schema gives
+        # the dotted paths; project the present ones as flat columns. Raise if none
+        # resolve rather than silently collapse the system/code breakdown.
+        from spark_config_mapper import flat_schema
+        dot_paths = set(flat_schema(df))
+        code_dims = []
+        for _sub, _suffix in (('standard.id', '_standard_id'),
+                              ('standard.codingSystemId', '_standard_codingSystemId'),
+                              ('standard.primaryDisplay', '_standard_primaryDisplay')):
+            if (codefield + '.' + _sub) in dot_paths:
+                _canon = codefield + _suffix
+                df = df.withColumn(_canon, F.col(codefield + '.' + _sub))
+                code_dims.append(_canon)
+        if not code_dims:
+            raise ValueError(
+                "build_ontology_*: no code dims resolved from struct '{}' (expected "
+                "'{}.standard.id' etc. in the source).".format(codefield, codefield))
         system = codefield + '_standard_codingSystemId'
-        code_dims = [c for c in (codefield + '_standard_id', system,
-                                 codefield + '_standard_primaryDisplay')
-                     if c in df.columns]
-        gb = [g for g in group_by if g in df.columns]
+        missing = [g for g in group_by if g not in df.columns]
+        if missing:
+            raise ValueError(
+                "build_ontology_*: group_by keys {} not in source.".format(missing))
+        if person not in df.columns:
+            raise ValueError(
+                "build_ontology_*: person key '{}' not in source.".format(person))
+        gb = group_by
         keys = gb + code_dims
         result = df.groupBy(*keys).agg(
             F.max('mapped').alias('mapped'),
