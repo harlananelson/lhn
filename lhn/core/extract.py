@@ -1409,6 +1409,10 @@ class ExtractItem(SharedMethodsMixin):
                 "build_ontology_counts on '{}': codefield '{}' not in source "
                 "(columns: {}).".format(name, codefield, df.columns))
         df = _derive_date_parts(df, datefield, group_by)
+        # Sentinel unknown dates to -1 so the INNER joins + the denominator join below
+        # don't silently drop unknown-date rows (Spark NULL != NULL). The datadict path
+        # (single groupBy, no join) does NOT need this.
+        df = _sentinel_unknown_dates(df, group_by)
 
         def _lit(v):
             # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
@@ -1477,7 +1481,9 @@ class ExtractItem(SharedMethodsMixin):
             # here so callers don't hand-roll it — keeps the group_by contract in one place.
             denom = df.groupBy(*gb).agg(F.countDistinct(person).alias('n'))
         if isinstance(denom, DataFrame):
-            # keep only the keys + n so a custom sample_n's extra columns don't leak in.
+            # match the sentinel so a custom sample_n's unknown-date rows join (not NULL),
+            # and keep only the keys + n so its extra columns don't leak in.
+            denom = _sentinel_unknown_dates(denom, gb)
             denom = denom.select(*[c for c in (gb + ['n']) if c in denom.columns])
             counts = counts.join(denom, on=gb, how='left')
             for c in ('Concept', 'System', 'Code'):
@@ -1550,6 +1556,10 @@ class ExtractItem(SharedMethodsMixin):
                 "build_ontology_coverage on '{}': codefield '{}' not in source "
                 "(columns: {}).".format(name, codefield, df.columns))
         df = _derive_date_parts(df, datefield, group_by)
+        # Sentinel unknown dates to -1 so the INNER joins + the denominator join below
+        # don't silently drop unknown-date rows (Spark NULL != NULL). The datadict path
+        # (single groupBy, no join) does NOT need this.
+        df = _sentinel_unknown_dates(df, group_by)
 
         def _lit(v):
             # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
@@ -1603,10 +1613,17 @@ class ExtractItem(SharedMethodsMixin):
 
 def _derive_date_parts(df, datefield, group_by):
     """Add ``year``/``month`` columns derived from ``datefield`` when ``group_by``
-    asks for them and they are absent. ``datefield`` may be one column or a list
-    (coalesce precedence). Null dates yield NULL year/month — a visible 'unknown'
-    group, not a silent drop. Shared by :meth:`ExtractItem.build_datadict` and
-    :meth:`ExtractItem.build_ontology_counts`."""
+    asks for them and they are absent, plus a ``<part>_is_unknown`` boolean flag.
+
+    ``datefield`` may be one column or a list (coalesce precedence). An unknown
+    (unparseable/absent) date yields NULL year/month with ``year_is_unknown`` /
+    ``month_is_unknown`` = True — a *visible* unknown, not a silent drop. A single
+    ``groupBy`` treats NULL as its own group, so the datadict path is safe as-is; the
+    ontology path additionally sentinel-fills NULL -> -1 (see :func:`_sentinel_unknown_dates`)
+    because Spark ``NULL != NULL`` would drop unknown-date rows from its INNER joins.
+
+    Shared by :meth:`ExtractItem.build_datadict`, :meth:`ExtractItem.build_ontology_counts`,
+    and :meth:`ExtractItem.build_ontology_coverage`."""
     need = [p for p in ('year', 'month') if p in group_by and p not in df.columns]
     if not need:
         return df
@@ -1616,10 +1633,23 @@ def _derive_date_parts(df, datefield, group_by):
             "and the columns are absent.".format(need))
     fields = datefield if isinstance(datefield, (list, tuple)) else [datefield]
     d = F.to_date(F.coalesce(*[F.col(c) for c in fields]))
-    if 'year' in need:
-        df = df.withColumn('year', F.year(d))
-    if 'month' in need:
-        df = df.withColumn('month', F.month(d))
+    unknown = d.isNull()
+    for part, fn in (('year', F.year), ('month', F.month)):
+        if part in need:
+            df = df.withColumn(part, fn(d))
+            df = df.withColumn(part + '_is_unknown', unknown)
+    return df
+
+
+def _sentinel_unknown_dates(df, group_by):
+    """Fill NULL ``year``/``month`` in ``group_by`` with the sentinel ``-1`` so INNER
+    joins and the denominator join don't silently drop unknown-date rows (Spark
+    ``NULL != NULL``). Use on the ontology paths (which join on ``group_by``); the
+    ``*_is_unknown`` flag from :func:`_derive_date_parts` still marks the sentinel rows.
+    The datadict path (single ``groupBy``, no join) does NOT need this."""
+    for part in ('year', 'month'):
+        if part in group_by and part in df.columns:
+            df = df.withColumn(part, F.coalesce(F.col(part), F.lit(-1).cast('int')))
     return df
 
 
