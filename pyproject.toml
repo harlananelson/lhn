@@ -7,13 +7,14 @@ name = "lhn"
 version = "0.2.1.dev0"
 description = "Healthcare data extraction and analysis workflows for HealthEIntent systems"
 readme = "README.md"
-license = {text = "Proprietary"}
+license = {text = "MIT"}
 authors = [
     {name = "Harlan Nelson", email = "hnelson@example.com"}
 ]
 requires-python = ">=3.7"
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
     "Intended Audience :: Healthcare Industry",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",

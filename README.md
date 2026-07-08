@@ -180,4 +180,4 @@ If migrating from the original `lhn` package:
 
 ## License
 
-Proprietary - Oracle Health
+MIT — see [LICENSE](LICENSE).
