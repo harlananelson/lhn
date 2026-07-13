@@ -1198,15 +1198,41 @@ class ExtractItem(SharedMethodsMixin):
             if rf not in keep:
                 keep.append(rf)
 
+        def _keep_expr(field, available):
+            """Resolve a keep/retained field to a select expression.
+
+            A dotted path ('typedvalue.numericValue.value') is pulled out of the
+            struct and aliased to the flattened name ('typedvalue_numericValue_value'),
+            matching flattenTable's convention so the output column is the same one
+            r.<source>.df would expose. This lets a caller keep a nested VALUE at
+            extract time (avoiding a second full-table join to attach it). Returns
+            None if the field (or its struct root) isn't present.
+            """
+            if field in available:
+                return F.col(field)
+            if '.' in field and field.split('.')[0] in available:
+                return F.col(field).alias(field.replace('.', '_'))
+            return None
+
         parts = []
         for row in flags:
             matched = source_df.filter(
                 "has_concept_in_context({code}, '{concept}', '{context}')".format(
                     code=code, concept=_lit(row['concept']),
                     context=_lit(row['context']))
-            ).withColumn('flag', F.lit(row['flag']))
-            select_cols = [c for c in keep if c in matched.columns] + ['flag']
-            parts.append(matched.select(*select_cols))
+            )
+            available = matched.columns
+            exprs = [(c, _keep_expr(c, available)) for c in keep]
+            dropped = [c for c, x in exprs if x is None]
+            if dropped:
+                # Previously these were dropped SILENTLY (a typo'd or nested retained
+                # field just vanished). Warn instead.
+                logger.warning(
+                    "extract_concept_events on '%s': keep/retained fields not found "
+                    "in source, dropped: %s", name, dropped)
+            parts.append(matched.select(
+                *[x for _, x in exprs if x is not None],
+                F.lit(row['flag']).alias('flag')))
         # All parts share the same schema (same select), so a plain unionByName is
         # safe on Spark 2.4.4 (no allowMissingColumns needed).
         result = parts[0]
