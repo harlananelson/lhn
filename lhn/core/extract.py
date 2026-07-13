@@ -1083,7 +1083,8 @@ class ExtractItem(SharedMethodsMixin):
 
     def extract_concept_events(self, source, cohort=None, index_fields=None,
                                code=None, concept_flags=None, datefield=None,
-                               retained_fields=None, push=True, set_self_df=True):
+                               retained_fields=None, histStart=None, histStop=None,
+                               push=True, set_self_df=True):
         """
         Record-level (dated) counterpart of :meth:`extract_concept_flags`.
 
@@ -1104,6 +1105,11 @@ class ExtractItem(SharedMethodsMixin):
                 ``effectivedate``). Falls back to ``self.datefieldPrimary``.
             retained_fields (list[str] | None): extra source columns to keep.
                 Falls back to ``self.retained_fields`` (default: none).
+            histStart / histStop (date-like | None): inclusive study-window bounds
+                on ``datefield``, applied to ``source`` BEFORE the concept UDF (so
+                only in-window rows are scanned — a large speedup on all-history
+                sources). Fall back to ``self.histStart`` / ``self.histStop``.
+                Mirrors entityExtract's windowing.
 
         Same crash-on-unknown-concept caveat as ``extract_concept_flags``: every
         concept/context pair MUST be validated against the tabulation. The
@@ -1162,6 +1168,23 @@ class ExtractItem(SharedMethodsMixin):
             join_keys = [k for k in index_fields if k in cohort_df.columns]
             cohort_keys = cohort_df.select(*join_keys).distinct()
             source_df = source_df.join(cohort_keys, on=join_keys, how='inner')
+
+        # Study-window filter on the datefield (mirrors entityExtract's datefieldSource +
+        # histStart/histStop). Resolve from args then config; skip silently if unset. Applied
+        # BEFORE the has_concept_in_context UDF so the UDF scans only in-window rows — a large
+        # speedup on all-history sources (e.g. the raw lab table). The original
+        # extract_concept_events had this window; it was dropped in a refactor — restored here.
+        histStart = histStart if histStart is not None else getattr(self, 'histStart', None)
+        histStop = histStop if histStop is not None else getattr(self, 'histStop', None)
+        if histStart is not None or histStop is not None:
+            if datefield is None:
+                raise ValueError(
+                    "extract_concept_events on '{}': histStart/histStop set but no datefield "
+                    "to window on (set datefieldPrimary in config).".format(name))
+            if histStart is not None:
+                source_df = source_df.filter(F.col(datefield) >= histStart)
+            if histStop is not None:
+                source_df = source_df.filter(F.col(datefield) <= histStop)
 
         # SQL-registered UDF -> F.expr string (Spark 2.4.4, no F.call_udf). Escape
         # single quotes in the literals (see extract_concept_flags).
