@@ -354,7 +354,8 @@ still rebind/auto-write ``self.df`` so re-runs do not reload a stale Hive produc
 - **Attach** — left-join finished person products onto a person spine. Not a
   reshape; closer to data.table after the “function” already ran.
 - **YAML** owns join policy (`howjoin`, `broadcast_flag`, `on_collision`,
-  `indexFields`, hist). Notebook call is thin so config is DAG-complete and
+  `indexFields`, hist) and **run order** (order of keys under `projectTables`).
+  Notebook call is thin and follows that order so config is DAG-complete and
   review focuses on pipeline logic.
 
 ```yaml
