@@ -339,6 +339,8 @@ e.diabetes_index.index_col            # index_diabetes
 e.diabetes_index.last_col             # last_diabetes
 e.diabetes_index.entries_col          # entries_diabetes
 e.diabetes_index.encounter_days_col   # encounter_days_diabetes (code-namespaced)
+# retained_fields stay bare names (not code-suffixed) — avoid the same
+# retained column on two products if attaching under on_collision: raise.
 
 # Tabulate any DataFrame without borrowing an ExtractItem host:
 from lhn import tabulate

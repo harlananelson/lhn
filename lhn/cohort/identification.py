@@ -35,6 +35,10 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
             ``withColumn`` needed for person-year / person-month indexes.
         retained_fields (list): Additional fields to retain (existing column
             names only; not expressions). Grain keys belong in ``index_field``.
+            Unlike aggregates (``entries_{code}``, ``encounter_days_{code}``,
+            …), retained column names are **not** code-namespaced — if two
+            index products both retain the same bare name, left-attach under
+            ``on_collision='raise'`` will collide.
         datefieldPrimary (list or str): Date field(s) for ordering
         code (str): Tag for naming output fields (e.g., 'SCD')
         datefieldStop (str, optional): End date field (e.g., medication stop date).

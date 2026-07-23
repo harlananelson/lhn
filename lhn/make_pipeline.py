@@ -692,7 +692,10 @@ def make_run(
 
     fps = compute_fingerprints(tables, order, global_token=gtoken)
     manifest = load_manifest(project_path)
-    # Work on a copy so --dry-run never mutates on-disk state (Fable M2)
+    # Work on a shallow copy so --dry-run never mutates on-disk state (Fable M2).
+    # Safe only while adopt/freshness *reassign* keys (nodes_m[dep] = {...})
+    # rather than mutating nested node dicts in place — do not change that
+    # pattern without deep-copying or isolating nested values.
     nodes_m = dict(manifest.get('nodes') or {})
     if not dry_run:
         for stale in list(nodes_m.keys()):
