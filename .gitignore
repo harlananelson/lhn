@@ -187,3 +187,5 @@ cache.json
 # ───────────────────────────────────────────────
 .claude/
 .logs/
+# make runner state
+.lhn-make/
