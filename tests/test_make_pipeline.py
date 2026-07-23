@@ -53,12 +53,13 @@ projectTables:
 def test_load_sections_and_order(tmp_path: Path):
     p = tmp_path / '000-control.yaml'
     p.write_text(SAMPLE_YAML, encoding='utf-8')
-    tables, order, sections = load_project_tables(str(p))
+    tables, order, sections, root = load_project_tables(str(p))
     assert order == ['codes', 'personYearA', 'personYearB', 'overlap', 'panel']
     assert '011' in sections
     assert '014' in sections
     assert sections['014'] == ['personYearA', 'personYearB', 'overlap', 'panel']
     assert tables['overlap']['howjoin'] == 'inner'
+    assert isinstance(root, dict)
 
 
 def test_deps_and_fingerprint_changes():
@@ -66,10 +67,14 @@ def test_deps_and_fingerprint_changes():
         'method': 'write_index_table',
         'inputs': {'inTable': 'codes'},
         'code': 'a',
+        'label': 'ignore me',  # blacklist — should not affect fp alone vs copy
     }
     cfg_b = dict(cfg_a)
     cfg_b['code'] = 'b'
     assert node_config_fingerprint(cfg_a) != node_config_fingerprint(cfg_b)
+    cfg_c = dict(cfg_a)
+    cfg_c['label'] = 'other label'
+    assert node_config_fingerprint(cfg_a) == node_config_fingerprint(cfg_c)
     assert deps_from_inputs(cfg_a) == ['codes']
     assert deps_from_inputs({
         'inputs': {
@@ -83,13 +88,17 @@ def test_deps_and_fingerprint_changes():
 def test_upstream_fingerprint_invalidates(tmp_path: Path):
     p = tmp_path / '000-control.yaml'
     p.write_text(SAMPLE_YAML, encoding='utf-8')
-    tables, order, _ = load_project_tables(str(p))
-    fps1 = compute_fingerprints(tables, order)
+    tables, order, _, root = load_project_tables(str(p))
+    from lhn.make_pipeline import global_source_fingerprint
+    g = global_source_fingerprint(root)
+    fps1 = compute_fingerprints(tables, order, global_token=g)
     tables['personYearA']['code'] = 'CHANGED'
-    fps2 = compute_fingerprints(tables, order)
+    fps2 = compute_fingerprints(tables, order, global_token=g)
     assert fps1['personYearA'] != fps2['personYearA']
-    # downstream should change too
     assert fps1['overlap'] != fps2['overlap']
+    # global token change invalidates all
+    fps3 = compute_fingerprints(tables, order, global_token='different')
+    assert fps2['overlap'] != fps3['overlap']
 
 
 def test_splice_notebook(tmp_path: Path):
