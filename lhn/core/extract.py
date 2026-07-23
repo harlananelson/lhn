@@ -483,7 +483,8 @@ class ExtractItem(SharedMethodsMixin):
                       howjoin='inner', cacheResult=True, broadcast_flag=True,
                       set_self_df=True,
                       cohort=None, cohortColumns=None,
-                      howCohortJoin='inner'):
+                      howCohortJoin='inner',
+                      on_collision='exclude'):
         """
         Extract records from a source table using an element list as the index.
 
@@ -507,7 +508,10 @@ class ExtractItem(SharedMethodsMixin):
             method with ``howjoin='inner'`` and keys including ``year``.
             **Left-attach** of a person feature table onto a person base is
             the same method with ``howjoin='left'`` and the base as
-            ``entitySource``.
+            ``entitySource``. For attach/panel joins prefer
+            ``on_collision='raise'`` so non-key column name clashes
+            (e.g. two features both emitting ``entries_*``) fail loudly
+            instead of ``noColColide`` silently dropping a side.
 
         Empty-join contract:
             If the join yields zero rows, ``identify_target_records`` returns
@@ -538,6 +542,10 @@ class ExtractItem(SharedMethodsMixin):
             cohortColumns (list): Columns to select from cohort.df. If None,
                 uses cohort.df.columns.
             howCohortJoin (str): Join type for cohort join (default: 'inner')
+            on_collision (str): ``'exclude'`` (default) or ``'raise'`` —
+                passed to ``noColColide`` when selecting columns for the join.
+                Use ``'raise'`` for person-feature attach so silent drops
+                cannot hide a clash.
 
         Returns:
             DataFrame: Extracted records
@@ -638,7 +646,8 @@ class ExtractItem(SharedMethodsMixin):
             cacheResult=cacheResult,
             broadcast_flag=broadcast_flag,
             masterList=masterList,
-            howjoin=howjoin
+            howjoin=howjoin,
+            on_collision=on_collision,
         )
 
         if set_self_df and result is not None:

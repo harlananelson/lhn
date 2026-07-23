@@ -277,7 +277,8 @@ def identify_target_records(entitySource, elementIndex, elementExtract,
                             datefieldSource=None, histStart=None, histStop=None,
                             datefieldElement=None, cacheResult=True,
                             broadcast_flag=True, masterList=None,
-                            howjoin=JOIN_INNER):
+                            howjoin=JOIN_INNER,
+                            on_collision='exclude'):
     """
     Extract records from a source table based on an index table.
     
@@ -296,6 +297,9 @@ def identify_target_records(entitySource, elementIndex, elementExtract,
         broadcast_flag (bool): Broadcast the index table
         masterList (list): Columns to include in output
         howjoin (str): Join type
+        on_collision (str): Forwarded to ``noColColide`` — ``'exclude'``
+            (default, legacy silent drop of non-key name clashes) or
+            ``'raise'`` (fail on clash; use for person-feature attach).
     
     Returns:
         DataFrame: Extracted records
@@ -334,14 +338,14 @@ def identify_target_records(entitySource, elementIndex, elementExtract,
     
     logger.info(f"identify_target_records: index={elementIndex}")
     
-    # Resolve columns to avoid collisions
+    # Resolve columns to avoid collisions (default exclude = legacy)
     entitySourceSelect = noColColide(
-        entitySource.columns, elementExtract.columns, 
-        elementIndex, masterList=masterList
+        entitySource.columns, elementExtract.columns,
+        elementIndex, masterList=masterList, on_collision=on_collision
     )
     elementExtractSelect = noColColide(
         elementExtract.columns, entitySourceSelect,
-        elementIndex, masterList=masterList
+        elementIndex, masterList=masterList, on_collision=on_collision
     )
     
     # Prepare index table
