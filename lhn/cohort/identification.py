@@ -28,8 +28,13 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
 
     Parameters:
         inTable (DataFrame): Source data with events
-        index_field (list): Fields defining unique entities (e.g., ['personid'])
-        retained_fields (list): Additional fields to retain
+        index_field (list): Fields defining unique entities (e.g., ['personid'],
+            or ``['personid', 'tenant', 'year']`` for person-year grain).
+            Calendar parts ``year`` / ``month`` listed here are auto-derived
+            from ``datefieldPrimary`` when missing on the input — no notebook
+            ``withColumn`` needed for person-year / person-month indexes.
+        retained_fields (list): Additional fields to retain (existing column
+            names only; not expressions). Grain keys belong in ``index_field``.
         datefieldPrimary (list or str): Date field(s) for ordering
         code (str): Tag for naming output fields (e.g., 'SCD')
         datefieldStop (str, optional): End date field (e.g., medication stop date).
@@ -56,6 +61,12 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
         - ``{lastLabel}therapy_{code}`` — last date per therapy (if max_gap set)
         - ``encounter_days_for_course`` — distinct event days per therapy (if max_gap set)
         - ``max_gap`` — longest gap within therapy (if max_gap set)
+
+    Example (person-year index via YAML ``indexFields``)::
+
+        # indexFields: [personid, tenant, year]
+        # datefieldPrimary: [datetimeCondition]
+        e.personYearDx.write_index_table(inTable=e.conditionEncounter)
     """
     # Ensure list format for fields
     if isinstance(index_field, str):
@@ -80,6 +91,29 @@ def write_index_table(inTable, index_field, retained_fields, datefieldPrimary,
     if histEnd:
         df = df.filter(F.col(datefieldPrimary_col) <= histEnd)
         df = df.filter(F.col(datefieldPrimary_col).isNotNull())
+
+    # Calendar grain keys: when index_field lists year/month and the column is
+    # absent, derive from datefieldPrimary. Lets person-year / person-month
+    # indexes be fully config-driven (indexFields in YAML) without notebook
+    # F.year / F.month. If the column already exists, leave it alone.
+    _calendar_parts = {
+        'year': lambda c: F.year(F.col(c)),
+        'month': lambda c: F.month(F.col(c)),
+    }
+    for part, expr_fn in _calendar_parts.items():
+        if part in index_field and part not in df.columns:
+            if datefieldPrimary_col not in df.columns:
+                raise ValueError(
+                    f"write_index_table: index_field includes '{part}' but "
+                    f"neither '{part}' nor datefieldPrimary "
+                    f"'{datefieldPrimary_col}' is on the input DataFrame "
+                    f"(columns={list(df.columns)[:40]}…)."
+                )
+            logger.info(
+                "write_index_table: deriving %s from %s (listed in index_field)",
+                part, datefieldPrimary_col,
+            )
+            df = df.withColumn(part, expr_fn(datefieldPrimary_col))
 
     # Add unique ID for tie-breaking in ordering windows.
     # monotonically_increasing_id() is NOT stable across re-runs after a

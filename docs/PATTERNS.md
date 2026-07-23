@@ -308,6 +308,29 @@ e.diabetes_index.write_index_table(
 e.diabetes_index.attrition()
 ```
 
+### Person-year index (calendar grain in ``indexFields``)
+
+When ``indexFields`` includes ``year`` or ``month`` and that column is missing
+on the input, ``write_index_table`` derives it from ``datefieldPrimary``. No
+notebook ``F.year(...)`` / ``withColumn``:
+
+```yaml
+# 000-control.yaml
+personYearDx:
+  method: write_index_table
+  indexFields: [personid, tenant, year]   # year auto-derived from date
+  datefieldPrimary: [datetimeCondition]
+  code: dx_py
+```
+
+```python
+e.personYearDx.write_index_table(inTable=e.conditionEncounter)
+# → one row per (personid, tenant, year) with index_dx_py, last_dx_py, entries_dx_py
+```
+
+Same-year overlap of two person-year tables is then ``entityExtract`` on
+``[personid, tenant, year]`` (not a hand join).
+
 ---
 
 ## Pattern 2: Medication-Based Analysis

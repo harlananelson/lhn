@@ -301,6 +301,10 @@ class ExtractItem(SharedMethodsMixin):
         
         This method identifies the first (index) date for each entity
         (typically a person) and optionally filters by date range.
+        Grain comes from YAML ``indexFields`` (e.g. person, or person-year
+        via ``[personid, tenant, year]``). Calendar parts ``year`` / ``month``
+        in ``indexFields`` are auto-derived from ``datefieldPrimary`` when
+        missing on the input — no notebook ``withColumn`` needed.
         
         Parameters:
             inTable: Source DataFrame or object with df attribute
