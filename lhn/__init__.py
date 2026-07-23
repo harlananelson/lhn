@@ -37,7 +37,8 @@ from lhn.core import (
     Extract,
     ExtractItem,
     DB,
-    SharedMethodsMixin
+    SharedMethodsMixin,
+    tabulate,
 )
 
 # Re-export key functions from spark_config_mapper for convenience
@@ -118,6 +119,7 @@ __all__ = [
     'ExtractItem',
     'DB',
     'SharedMethodsMixin',
+    'tabulate',
     # Config (from spark_config_mapper)
     'read_config',
     'recursive_template',

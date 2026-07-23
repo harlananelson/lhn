@@ -331,6 +331,22 @@ e.personYearDx.write_index_table(inTable=e.conditionEncounter)
 Same-year overlap of two person-year tables is then ``entityExtract`` on
 ``[personid, tenant, year]`` (not a hand join).
 
+### Index column names + free-function tabulate
+
+```python
+# After write_index_table, never guess column names:
+e.diabetes_index.index_col     # index_diabetes
+e.diabetes_index.last_col      # last_diabetes
+e.diabetes_index.entries_col   # entries_diabetes
+
+# Tabulate any DataFrame without borrowing an ExtractItem host:
+from lhn import tabulate
+tabulate(some_df, group_cols=['year'], count_distinct='personid', show=True)
+```
+
+Empty ``entityExtract`` joins return an **empty DataFrame** (not ``None``) and
+still rebind/auto-write ``self.df`` so re-runs do not reload a stale Hive product.
+
 ---
 
 ## Pattern 2: Medication-Based Analysis

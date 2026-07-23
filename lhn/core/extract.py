@@ -191,7 +191,38 @@ class ExtractItem(SharedMethodsMixin):
                 logger.info(f"ExtractItem {getattr(self, 'name', 'unknown')}: csv={self.csv}")
             if hasattr(self, 'parquet'):
                 logger.info(f"ExtractItem: parquet={self.parquet}")
-    
+
+    @property
+    def index_col(self):
+        """First-date column name produced by ``write_index_table``.
+
+        Derived from YAML ``indexLabel`` (default ``index_``) + ``code``.
+        Example: ``code='glp1any'`` → ``index_glp1any``. Avoids notebook
+        column-name guessing (``startswith('index_')``).
+        """
+        label = getattr(self, 'indexLabel', None) or 'index_'
+        code = getattr(self, 'code', None) or ''
+        return f"{label}{code}"
+
+    @property
+    def last_col(self):
+        """Last-date column name produced by ``write_index_table``.
+
+        Derived from YAML ``lastLabel`` (default ``last_``) + ``code``.
+        """
+        label = getattr(self, 'lastLabel', None) or 'last_'
+        code = getattr(self, 'code', None) or ''
+        return f"{label}{code}"
+
+    @property
+    def entries_col(self):
+        """Event-count column name produced by ``write_index_table``.
+
+        Form: ``entries_{code}`` (e.g. ``entries_obs_study``).
+        """
+        code = getattr(self, 'code', None) or ''
+        return f"entries_{code}"
+
     @property
     def df(self):
         """Lazy-load DataFrame from location if not set."""
@@ -479,15 +510,11 @@ class ExtractItem(SharedMethodsMixin):
             ``entitySource``.
 
         Empty-join contract:
-            If the join yields zero rows, the underlying
-            ``identify_target_records`` currently returns ``None`` (with a
-            warning). When that happens and ``set_self_df`` is True, this
-            method **does not** rebind ``self.df`` — so a prior Hive product
-            at ``self.location`` can be lazy-loaded on next access (stale on
-            re-runs that legitimately become empty). Callers that need a
-            guaranteed empty frame should check the return value or
-            ``attrition`` after the call. Prefer fixing upstream keys when
-            emptiness is unexpected.
+            If the join yields zero rows, ``identify_target_records`` returns
+            an **empty DataFrame** with the joined schema (warning logged) —
+            not ``None``. With ``set_self_df=True`` this still rebinds and
+            auto-writes ``self.df``, so re-runs do not silently reload a
+            stale prior Hive product.
 
         Parameters:
             elementList: Element/index table (ExtractItem or DataFrame) —

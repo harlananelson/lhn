@@ -353,12 +353,16 @@ def identify_target_records(entitySource, elementIndex, elementExtract,
     elements = entitySource.select(entitySourceSelect).join(
         indextable, on=elementIndex, how=howjoin
     )
-    
-    # Check for empty result
+
+    # Empty joins return an empty DataFrame with the joined schema — NOT None.
+    # Returning None left entityExtract's self.df unbound so a prior Hive
+    # product at self.location could lazy-load on re-runs (stale when this
+    # run legitimately matches zero rows).
     if elements.limit(1).count() == 0:
-        logger.warning("Join produced no records")
-        return None
-    
+        logger.warning(
+            "Join produced no records; returning empty DataFrame with join schema"
+        )
+
     # Handle date offsets
     if datefieldElement and histStart is not None and histStop is not None:
         if isinstance(histStart, int):
