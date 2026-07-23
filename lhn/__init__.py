@@ -41,6 +41,9 @@ from lhn.core import (
     tabulate,
 )
 
+# Make / targets-style runner (optional import surface)
+from lhn.make_pipeline import make_run, MakeReport  # noqa: E402
+
 # Re-export key functions from spark_config_mapper for convenience
 from spark_config_mapper import (
     # Configuration
@@ -120,6 +123,8 @@ __all__ = [
     'DB',
     'SharedMethodsMixin',
     'tabulate',
+    'make_run',
+    'MakeReport',
     # Config (from spark_config_mapper)
     'read_config',
     'recursive_template',

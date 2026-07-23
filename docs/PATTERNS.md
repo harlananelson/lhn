@@ -373,6 +373,17 @@ e.panel.entityExtract(e.featureIndex, e.personSpine.df)  # spine = LEFT entitySo
 
 Full notes: hdl-harness ``docs/entityextract-lineage-and-materialize.md``.
 
+### Make / skip-if-fresh (`python -m lhn.make`)
+
+```bash
+python -m lhn.make --section 014 --auto-notebook
+```
+
+Skips nodes whose config+upstream fingerprint matches
+``.lhn-make/manifest.json`` and whose Hive table still exists. Splices a
+``lhn-make-report`` markdown cell into the section notebook. See
+``lhn.make_pipeline`` docstring and the harness lineage doc.
+
 ---
 
 ## Pattern 2: Medication-Based Analysis
