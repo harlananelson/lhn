@@ -335,9 +335,10 @@ Same-year overlap of two person-year tables is then ``entityExtract`` on
 
 ```python
 # After write_index_table, never guess column names:
-e.diabetes_index.index_col     # index_diabetes
-e.diabetes_index.last_col      # last_diabetes
-e.diabetes_index.entries_col   # entries_diabetes
+e.diabetes_index.index_col            # index_diabetes
+e.diabetes_index.last_col             # last_diabetes
+e.diabetes_index.entries_col          # entries_diabetes
+e.diabetes_index.encounter_days_col   # encounter_days_diabetes (code-namespaced)
 
 # Tabulate any DataFrame without borrowing an ExtractItem host:
 from lhn import tabulate

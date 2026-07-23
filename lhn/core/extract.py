@@ -224,6 +224,16 @@ class ExtractItem(SharedMethodsMixin):
         return f"entries_{code}"
 
     @property
+    def encounter_days_col(self):
+        """Distinct-event-day count column from ``write_index_table``.
+
+        Form: ``encounter_days_{code}`` (code-namespaced so two index tables
+        can left-attach under ``on_collision='raise'``).
+        """
+        code = getattr(self, 'code', None) or ''
+        return f"encounter_days_{code}" if code else "encounter_days"
+
+    @property
     def df(self):
         """Lazy-load DataFrame from location if not set."""
         if not hasattr(self, '_df') or self._df is None:

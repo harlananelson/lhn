@@ -544,6 +544,7 @@ def upstream_fresh(
                 dep,
             )
             # Record adoption so future config drift is detected
+            # (caller must not persist nodes_m when dry_run)
             nodes_m[dep] = {
                 'fingerprint': dep_fp,
                 'location': dep_loc,
@@ -691,11 +692,12 @@ def make_run(
 
     fps = compute_fingerprints(tables, order, global_token=gtoken)
     manifest = load_manifest(project_path)
-    nodes_m = manifest.setdefault('nodes', {})
-    # prune deleted nodes
-    for stale in list(nodes_m.keys()):
-        if stale not in tables:
-            del nodes_m[stale]
+    # Work on a copy so --dry-run never mutates on-disk state (Fable M2)
+    nodes_m = dict(manifest.get('nodes') or {})
+    if not dry_run:
+        for stale in list(nodes_m.keys()):
+            if stale not in tables:
+                del nodes_m[stale]
 
     started = datetime.now(timezone.utc).isoformat()
     report = MakeReport(started=started, section=section)
@@ -819,8 +821,12 @@ def make_run(
             ))
 
     report.finished = datetime.now(timezone.utc).isoformat()
-    mpath = save_manifest(project_path, manifest)
-    report.manifest_path = str(mpath)
+    if dry_run:
+        report.manifest_path = str(_manifest_path(project_path)) + ' (not written; dry-run)'
+    else:
+        manifest['nodes'] = nodes_m
+        mpath = save_manifest(project_path, manifest)
+        report.manifest_path = str(mpath)
 
     nb = notebook_path
     if auto_notebook and not nb and section:
