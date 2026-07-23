@@ -480,11 +480,11 @@ class ExtractItem(SharedMethodsMixin):
     def entityExtract(self, elementList, entitySource, elementIndex=None,
                       datefieldSource=None, histStart=None, histStop=None,
                       datefieldElement=None, masterList=None,
-                      howjoin='inner', cacheResult=True, broadcast_flag=True,
+                      howjoin=None, cacheResult=True, broadcast_flag=None,
                       set_self_df=True,
                       cohort=None, cohortColumns=None,
                       howCohortJoin='inner',
-                      on_collision='exclude'):
+                      on_collision=None):
         """
         Extract records from a source table using an element list as the index.
 
@@ -526,15 +526,18 @@ class ExtractItem(SharedMethodsMixin):
                 ``broadcast_flag=True``.
             entitySource: Source DataFrame (or object with df attribute) —
                 LEFT side of the join (rows preserved under left join).
-            elementIndex (list): Columns for join (default: elementList.indexFields)
+            elementIndex (list): Columns for join. If omitted: elementList's
+                ``indexFields``, else ``self.indexFields``, else ``['personid']``.
             histStart: Start date/offset
             histStop: Stop date/offset
             datefieldElement (str): Date column in self.df for offsets
             masterList (list): Columns to include in output
-            howjoin (str): Join type (default ``inner``). Use ``left`` for
-                attach-base-to-feature with base as ``entitySource``.
+            howjoin (str): Join type. If omitted, YAML ``howjoin`` on self,
+                else ``'inner'``. Use ``left`` for attach (spine as entitySource).
             cacheResult (bool): Cache result DataFrame
-            broadcast_flag (bool): Broadcast **elementList** for the join
+            broadcast_flag (bool): Broadcast **elementList**. If omitted, YAML
+                ``broadcast_flag`` on self, else ``True``. Set ``false`` in YAML
+                for large person / person-year keys.
             set_self_df (bool): If True, assign result back to self.df
             cohort: Optional cohort object (with .df, .indexFields) to
                 filter entitySource to cohort members before extraction.
@@ -542,10 +545,15 @@ class ExtractItem(SharedMethodsMixin):
             cohortColumns (list): Columns to select from cohort.df. If None,
                 uses cohort.df.columns.
             howCohortJoin (str): Join type for cohort join (default: 'inner')
-            on_collision (str): ``'exclude'`` (default) or ``'raise'`` —
-                passed to ``noColColide`` when selecting columns for the join.
-                Use ``'raise'`` for person-feature attach so silent drops
-                cannot hide a clash.
+            on_collision (str): ``'exclude'`` or ``'raise'``. If omitted, YAML
+                ``on_collision`` on self, else ``'exclude'``. Use ``raise`` for
+                person-feature attach (non-key name clash = error).
+
+        Config vs call (thin notebook principle):
+            Put join policy and windows on the ExtractItem in ``000-control.yaml``
+            so YAML is a complete metadocument (DAG-able). The notebook call should
+            be ``entityExtract(elementList, entitySource)`` unless a rare local
+            override is required. Call kwargs always win over YAML when provided.
 
         Returns:
             DataFrame: Extracted records
@@ -569,6 +577,12 @@ class ExtractItem(SharedMethodsMixin):
             datefieldElement = getattr(self, 'datefieldElement', None)
         if masterList is None:
             masterList = getattr(self, 'masterList', None)
+        if howjoin is None:
+            howjoin = getattr(self, 'howjoin', 'inner')
+        if broadcast_flag is None:
+            broadcast_flag = getattr(self, 'broadcast_flag', True)
+        if on_collision is None:
+            on_collision = getattr(self, 'on_collision', 'exclude')
 
         # Get the actual DataFrames
         if hasattr(elementList, 'df'):
