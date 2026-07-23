@@ -347,6 +347,28 @@ tabulate(some_df, group_cols=['year'], count_distinct='personid', show=True)
 Empty ``entityExtract`` joins return an **empty DataFrame** (not ``None``) and
 still rebind/auto-write ``self.df`` so re-runs do not reload a stale Hive product.
 
+### Feature production vs feature attach
+
+- **Production** — multi-step extract → person-year → overlap → person index
+  (materialized ExtractItems). Expensive; keep as visible method chains.
+- **Attach** — left-join finished person products onto a person spine. Not a
+  reshape (`pivot_wider`); closer to data.table column-from-function after the
+  function already ran.
+
+```python
+# Attach (spine LEFT): no attach_features helper — visible entityExtract
+e.panel.entityExtract(
+    e.featureIndex,           # feature (right)
+    e.personSpine.df,         # spine (LEFT)
+    elementIndex=['personid', 'tenant'],
+    howjoin='left',
+    broadcast_flag=False,
+    on_collision='raise',     # non-key name clash = error (not silent drop)
+)
+```
+
+Full pattern notes: hdl-harness ``docs/entityextract-lineage-and-materialize.md``.
+
 ---
 
 ## Pattern 2: Medication-Based Analysis
