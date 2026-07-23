@@ -215,8 +215,20 @@ def deps_from_inputs(cfg: dict) -> List[str]:
 
 @dataclass
 class NodeResult:
+    """Outcome of one projectTables node in a make run.
+
+    Attributes:
+        name: ExtractItem / projectTables key.
+        action: ``built``, ``skipped``, ``plan``, ``failed``, or ``unsupported``.
+        reason: Short human-readable explanation.
+        fingerprint: Config+upstream fingerprint used for freshness.
+        location: Hive table path if known.
+        n_rows: Row count when available.
+        elapsed_s: Wall time for a build attempt.
+        error: Exception text when ``action`` is ``failed``.
+    """
     name: str
-    action: str  # built | skipped | failed | unsupported
+    action: str  # built | skipped | plan | failed | unsupported
     reason: str = ''
     fingerprint: str = ''
     location: str = ''
@@ -227,6 +239,15 @@ class NodeResult:
 
 @dataclass
 class MakeReport:
+    """Aggregate result of a make run (for CLI print and notebook splice).
+
+    Attributes:
+        started: ISO timestamp when the run began.
+        finished: ISO timestamp when the run finished.
+        section: Comment-section filter (e.g. ``'014'``), or None for all.
+        results: Per-node :class:`NodeResult` list in run order.
+        manifest_path: Path to ``.lhn-make/manifest.json`` (or dry-run note).
+    """
     started: str
     finished: str = ''
     section: Optional[str] = None
@@ -234,6 +255,11 @@ class MakeReport:
     manifest_path: str = ''
 
     def to_markdown(self) -> str:
+        """Render a markdown table of node actions for CLI or notebook splice.
+
+        Returns:
+            str: GitHub-flavored markdown including the lhn-make report header.
+        """
         lines = [
             '## lhn make report',
             '',
@@ -266,6 +292,14 @@ def _manifest_path(project_path: str) -> Path:
 
 
 def load_manifest(project_path: str) -> dict:
+    """Load skip-if-fresh state from ``{project}/.lhn-make/manifest.json``.
+
+    Parameters:
+        project_path (str): Project directory (contains ``000-control.yaml``).
+
+    Returns:
+        dict: Manifest with a ``nodes`` map; empty structure if missing/corrupt.
+    """
     p = _manifest_path(project_path)
     if not p.is_file():
         return {'nodes': {}}
@@ -277,6 +311,15 @@ def load_manifest(project_path: str) -> dict:
 
 
 def save_manifest(project_path: str, manifest: dict) -> Path:
+    """Persist make state under ``{project}/.lhn-make/manifest.json``.
+
+    Parameters:
+        project_path (str): Project directory.
+        manifest (dict): Full manifest document (must include ``nodes``).
+
+    Returns:
+        Path: Path written.
+    """
     p = _manifest_path(project_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     manifest['updated'] = datetime.now(timezone.utc).isoformat()
@@ -287,6 +330,15 @@ def save_manifest(project_path: str, manifest: dict) -> Path:
 
 
 def table_exists(spark, location: Optional[str]) -> bool:
+    """Return True if ``spark.table(location)`` can be opened.
+
+    Parameters:
+        spark: Active SparkSession.
+        location (str | None): Hive table name/path.
+
+    Returns:
+        bool: False when location is empty or the table cannot be loaded.
+    """
     if not location:
         return False
     try:
@@ -297,6 +349,15 @@ def table_exists(spark, location: Optional[str]) -> bool:
 
 
 def table_row_count(spark, location: Optional[str]) -> Optional[int]:
+    """Count rows in a Hive table, or None if unavailable.
+
+    Parameters:
+        spark: Active SparkSession.
+        location (str | None): Hive table name/path.
+
+    Returns:
+        int | None: Row count, or None on missing location / load error.
+    """
     if not location:
         return None
     try:
@@ -850,6 +911,14 @@ def make_run(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry for ``python -m lhn.make``.
+
+    Parameters:
+        argv: Optional argument list (defaults to ``sys.argv[1:]``).
+
+    Returns:
+        int: Process exit code (0 success, 1 if any node failed).
+    """
     parser = argparse.ArgumentParser(
         prog='python -m lhn.make',
         description='Make/targets-style runner for lhn projectTables',
