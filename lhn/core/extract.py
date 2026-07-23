@@ -460,19 +460,50 @@ class ExtractItem(SharedMethodsMixin):
         second arg = entity source (large, the table to extract from).
         Result is assigned to self.df.
 
+        Join geometry (load-bearing for overlap / left-attach):
+            Internally this is
+            ``entitySource.join(elementList, on=keys, how=howjoin)``
+            with optional broadcast of **elementList**. Therefore:
+
+            * **entitySource is the preserved LEFT side** of ``howjoin``
+              (for ``howjoin='left'``, keep the base table here — e.g. a
+              person index — and put the feature table in ``elementList``).
+            * **elementList is the broadcast side** when
+              ``broadcast_flag=True`` (default). Pass ``broadcast_flag=False``
+              when elementList is a large person or person-year table.
+
+            Same-key **overlap** of two person-year tables is just this
+            method with ``howjoin='inner'`` and keys including ``year``.
+            **Left-attach** of a person feature table onto a person base is
+            the same method with ``howjoin='left'`` and the base as
+            ``entitySource``.
+
+        Empty-join contract:
+            If the join yields zero rows, the underlying
+            ``identify_target_records`` currently returns ``None`` (with a
+            warning). When that happens and ``set_self_df`` is True, this
+            method **does not** rebind ``self.df`` — so a prior Hive product
+            at ``self.location`` can be lazy-loaded on next access (stale on
+            re-runs that legitimately become empty). Callers that need a
+            guaranteed empty frame should check the return value or
+            ``attrition`` after the call. Prefer fixing upstream keys when
+            emptiness is unexpected.
+
         Parameters:
-            elementList: Element/index table (ExtractItem or DataFrame) — the
-                small table of keys used to filter the source.
-            entitySource: Source DataFrame (or object with df attribute) — the
-                large table to extract from.
+            elementList: Element/index table (ExtractItem or DataFrame) —
+                join keys (and optional feature columns). Broadcast when
+                ``broadcast_flag=True``.
+            entitySource: Source DataFrame (or object with df attribute) —
+                LEFT side of the join (rows preserved under left join).
             elementIndex (list): Columns for join (default: elementList.indexFields)
             histStart: Start date/offset
             histStop: Stop date/offset
             datefieldElement (str): Date column in self.df for offsets
             masterList (list): Columns to include in output
-            howjoin (str): Join type
+            howjoin (str): Join type (default ``inner``). Use ``left`` for
+                attach-base-to-feature with base as ``entitySource``.
             cacheResult (bool): Cache result DataFrame
-            broadcast_flag (bool): Broadcast index for join
+            broadcast_flag (bool): Broadcast **elementList** for the join
             set_self_df (bool): If True, assign result back to self.df
             cohort: Optional cohort object (with .df, .indexFields) to
                 filter entitySource to cohort members before extraction.
