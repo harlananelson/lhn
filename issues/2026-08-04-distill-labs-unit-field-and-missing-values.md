@@ -158,10 +158,11 @@ of the unit dimension.
 
 ---
 
-## REVIEW 2026-08-04 — grounded second model (Claude Fable 5, )
+## REVIEW 2026-08-04 — grounded second model (Claude Fable 5)
 
-Run against the  source itself (), with the
-brief to verify every claim rather than agree. Verbatim below.
+Run with `call-claude.sh -m claude-fable-5 --mode thorough --effort high --cwd ~/projects/lhn
+--scope repo`, so the model read this repo's actual source rather than working from the reports.
+Briefed to verify every claim and to say plainly where a report was wrong. Verbatim below.
 
 # Issue 1 — `distill_labs` unit pooling and missing first/last value
 
