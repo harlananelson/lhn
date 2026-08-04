@@ -202,3 +202,43 @@ Worth adding for free, since hmi 025's `sorted(df.columns)`-at-load convention p
 The `to_csv` warning is log-only — no risk. The `write_all` change carries a real but small one: `write_safe` writes a uuid-named temp table and drops it, so every dirty item in a closing `write_all()` costs one extra table write and one `DROP`. For a wide fact table that is not free. Against that, it fixes a path that currently raises, so anyone affected is already broken. I would ship it as the default rather than opt-in, because the failure it prevents is an exception at the end of a long notebook — the most expensive place to fail — and add `write_all(lineage_safe=False)` for anyone who measures the temp-table cost and knows their items are clean.
 
 Severity: the report rates this medium. I'd hold that for the divergence itself but rate the underlying `write_all`/`write_safe` mismatch **high**, because it silently disables the documented mechanism for the exact case the dirty flag exists to catch, and every one of the nine auto-writing methods leads into it.
+
+---
+
+## Correction accepted 2026-08-04 (SCDCernerProject session) — my endorsement of fix 2 was wrong
+
+The review is right and my recommendation would have shipped a worse bug than the one it fixed.
+
+**What I got wrong.** I argued for fix 2 — write both artifacts from the frame `_auto_write` used,
+and require an explicit `.write()` for Hive. Both halves fail:
+
+1. Writing the CSV from the pre-join frame means hmi 020's CSV **silently loses**
+   `troponin_peak`, `troponin_n`, `troponin_min`, `troponin_max`, and R's analytic dataset loses
+   the peak entirely. I turned a visible schema mismatch into silent data loss **in the artifact
+   the analysis layer actually consumes**. That is strictly worse, and I reasoned about the
+   symmetry of the two artifacts without asking which one anybody reads.
+2. `.write()` is the one call that **raises** on this path — `writeTable`/`saveAsTable` with no
+   lineage break, against a `.df` still bound to `spark.table(location)`. I prescribed the
+   operation the hmi author had already documented as forbidden, in a comment in the notebook the
+   issue is about. It was in the material I had.
+
+**What the review found that neither of us did.** The divergence is not an oversight — it is a
+**forced workaround for a hole in the package**: after any auto-write, only `write_safe()` can
+update Hive, and neither `write()` nor `write_all()` routes to it. So the dirty-flag mechanism
+(`extract.py:266`) and the auto-write design contradict each other, and `write_all()` — documented
+as "load-bearing for items whose `.df` you mutated directly" — is precisely the call that fails for
+the case the dirty flag exists to catch. That reframes it from "two artifacts disagree" to "the
+documented convergence mechanism is disabled on nine methods".
+
+**The proposed patch is the right shape**, and better than either original fix, because it stops
+choosing between the artifacts and closes the hole: route `write_all()` to `write_safe()` for
+persisted items, and warn in `to_csv()` when `_dirty` is set. It uses state the package already
+maintains and makes the 020 pattern legal rather than merely audible.
+
+**What survives from my response:** the rejection of fix 1 (a CSV export must not mutate a Hive
+table other notebooks may have read) — upheld — and the docstring point that "auto-write" does not
+convey *when*, which the review picked up.
+
+I would also accept the severity upgrade. The divergence is medium; the `write_all`/`write_safe`
+mismatch underneath it is high, because it silently disables the documented remedy across all nine
+auto-writing methods.

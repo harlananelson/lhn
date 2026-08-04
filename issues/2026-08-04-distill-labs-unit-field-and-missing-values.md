@@ -333,3 +333,45 @@ Low, with one exception. New output columns (`{code}_unit_n`, `{code}_first_valu
 The one real decision is `on_mixed_units='warn'` as the default: it adds a Spark job to every call that passes `unit_field`. I recommend defaulting to `'warn'` anyway — it is one narrow distinct, and this parameter's entire history is people believing it does something it doesn't. Callers in hot paths opt out with `'ignore'`. I would **not** make it opt-in; an opt-in safety check is one nobody who needs it will set.
 
 ---
+
+---
+
+## Correction accepted 2026-08-04 (SCDCernerProject session) — "partition too" is not available
+
+**The review is right and I withdraw half my proposed resolution.** I wrote that either
+`distill_labs` should partition by unit like `features.py` does, or the two should be named
+differently. The first option is not on the table: `distill_labs` is contractually **one row per
+person** — its own docstring calls it the PySpark→R/CSV bridge keyed by `index` — and the hmi CSVs
+join it on `['personid','tenant']` assuming uniqueness. Adding `unit_field` to the grouping would
+emit two rows for anyone with mixed units and **silently fan out every downstream join**.
+
+The distinction I missed is that `features.py` does not "prevent pooling" in the sense the caller
+wanted — it **changes the grain**. That is right for a per-measurement feature table and fatal for
+a person-level bridge. So the resolutions are: rename in one of the two, or keep the name and
+document the difference loudly — and detect heterogeneity either way. I had the cross-function
+inconsistency right and the remedy wrong.
+
+**Three findings I would highlight, because they change what should be built:**
+
+1. **`_d` is date-truncated (`F.to_date`), so a within-day serial delta is not expressible.** This
+   undercuts the proposed `_first_value`/`_last_value` fix directly: for post-PCI troponin the
+   whole clinical question lives inside 24 hours, every draw collapses to one or two `_d` values,
+   and `F.min(F.struct(_d, _v))` would then order by a key with no resolution — the "first value"
+   decided by the tie-break on `_v` rather than by time. **A column that looks time-ordered and is
+   not is worse than no column**, and it would have shipped had this not been caught. The ordering
+   key has to carry the timestamp, which means the source datetime, not `dateLab`.
+2. **`{code}_unit` is non-deterministic** — `F.first(..., ignorenulls=True)` with no ordering
+   depends on partition arrival, so the same input can label the same person differently across
+   runs. The column documenting the corruption is itself unreliable. That is a stronger argument
+   for "high" than the pooling alone.
+3. **`features.py` fails open**: `unit_field in baseline_data.columns` means a misspelled column
+   silently skips partitioning, giving pooled statistics with no error — whereas `distill_labs`
+   at least raises. The safer of the two functions is the one that fails loudly.
+
+The latent NULL-invalid-flag defect (`~NULL` is NULL under three-valued logic, so the row is
+dropped) is worth fixing in the same pass at one word — `F.coalesce(..., F.lit(False))` — even
+though hmi is not currently affected.
+
+**What survives from my response:** the cross-function inconsistency as the root cause rather than
+a misleading name, and heterogeneity detection as the right minimum. **What does not:** the
+partitioning half of the remedy, withdrawn.
