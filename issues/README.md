@@ -11,6 +11,7 @@ and the wrong diagnosis is part of the report.
 
 | Filed | Issue | Severity | Where |
 |---|---|---|---|
+| 2026-08-10 | [Discern N-scan from per-concept filter + union](2026-08-10-discern-n-scan-union.md) | high — **fix on branch** `fix/discern-single-pass-scan` | `extract_concept_events` / `build_ontology_counts` |
 | 2026-08-04 | [`distill_labs`: `unit_field` does not prevent unit pooling; no first/last VALUE](2026-08-04-distill-labs-unit-field-and-missing-values.md) | high | `lhn/analytics.py` |
 | 2026-08-04 | [One node, two artifacts, different schemas (Hive vs CSV)](2026-08-04-lhn-hive-csv-schema-divergence.md) | medium | `write_index_table` / `_auto_write` / `to_csv` |
 
