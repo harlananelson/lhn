@@ -9,6 +9,18 @@
 > Goal: revive the Cerner Discern ontology query + the schema-wide ontology *tabulation*
 > on current HDL (HealtheDataLab), and fold the working pieces into current `lhn`.
 
+## ⇒ Related (2026-08-10) — single-pass regression fix
+
+`extract_concept_events` and `build_ontology_counts` still use **per-concept filter + union**
+(N full scans on Spark 2.4.4). That hurts hmi 066 and the **datadictrwd verified-concept catalog**
+(015 batches of ~100). Plan + multi-model review:
+
+- Issue: [`../issues/2026-08-10-discern-n-scan-union.md`](../issues/2026-08-10-discern-n-scan-union.md)
+- Plan: [`discern-single-pass-fix-plan.md`](discern-single-pass-fix-plan.md)
+- Reviews: [`../reviews/discern-single-pass-2026-08-10/`](../reviews/discern-single-pass-2026-08-10/)
+
+---
+
 ## ⇒ HANDOFF — where we are, where we're going (updated 2026-07-02)
 
 **Goal now:** implement Discern **inside the `lhn` package** so the *standard config-driven lhn

@@ -941,10 +941,12 @@ class ExtractItem(SharedMethodsMixin):
            loaded with ``concepts`` (arg) or ``self.concepts``.
         2. Else ``concept_flags`` (arg) or ``self.concept_flags`` (see
            :meth:`extract_concept_flags`) — push each *distinct* context named
-           there. Each is loaded as a FULL context (``concepts=None``), matching
-           the proven ``055`` path. The arg is preferred so a caller who passes
-           ``concept_flags`` to ``extract_concept_flags`` pushes the RIGHT
-           contexts even when nothing is in config.
+           there with a **concept-name subset** (the unique ``concept`` values
+           under that GUID, order-preserving). Matches the production
+           ``push_discern(..., concepts=conceptName)`` path and reduces
+           broadcast memory vs loading a full context. The arg is preferred so
+           a caller who passes ``concept_flags`` to extract methods pushes the
+           RIGHT contexts even when nothing is in config.
         3. Else ``self.discern_context`` with ``self.concepts``.
 
         Parameters:
@@ -961,9 +963,10 @@ class ExtractItem(SharedMethodsMixin):
                 may carry an unrelated dataset version — prefer discern_version).
             concepts (list[str] | None): Concept-name subset to load for the
                 ``discern_context`` path (memory reduction). Falls back to
-                ``self.concepts``. Not applied to the ``concept_flags`` path.
-            concept_flags (list[dict] | None): {flag, concept, context} rows;
-                if given, push each distinct ``context`` as a full context.
+                ``self.concepts``.
+            concept_flags (list[dict] | None): {flag?, concept, context} rows;
+                if given, push each distinct ``context`` with the unique
+                ``concept`` names listed under it (not a full-context load).
                 Takes precedence over ``self.concept_flags``.
 
         Raises:
@@ -999,18 +1002,19 @@ class ExtractItem(SharedMethodsMixin):
             for ctx in ctxs:
                 to_push[ctx] = ctx_concepts
         elif flags_cfg:
-            # Full context per distinct GUID (concepts=None) — the proven 055
-            # path. Subsetting is possible via the explicit discern_context arg.
-            # Validate 'context' here too: push_discern may be called directly
-            # (not only via extract_concept_flags, which validates rows first),
-            # so guard against a bare KeyError on a malformed row.
+            # Per-context concept subset (order-preserving unique). Production
+            # hnelson3 / foresight always pushed concepts=list, not full context.
+            # Validate keys here: push_discern may be called directly.
             for i, row in enumerate(flags_cfg):
-                if 'context' not in row:
+                missing = [k for k in ('concept', 'context') if k not in row]
+                if missing:
                     raise ValueError(
                         "push_discern on '{}': concept_flags[{}] missing "
-                        "'context' (got {!r}).".format(
-                            getattr(self, 'name', 'unknown'), i, row))
-                to_push.setdefault(row['context'], None)
+                        "{} (got {!r}).".format(
+                            getattr(self, 'name', 'unknown'), i, missing, row))
+                lst = to_push.setdefault(row['context'], [])
+                if row['concept'] not in lst:
+                    lst.append(row['concept'])
         elif getattr(self, 'discern_context', None):
             to_push[self.discern_context] = (
                 concepts if concepts is not None
@@ -1155,17 +1159,13 @@ class ExtractItem(SharedMethodsMixin):
 
         # One MAX(IF(has_concept_in_context(...))) aggregate per flag. The UDF is
         # SQL-registered by push_discern, so F.expr (a string) is the only way to
-        # call it on Spark 2.4.4 (no F.call_udf until 3.5). Escape single quotes
-        # in the literals so a concept name with an apostrophe can't break or
-        # inject the expression.
-        def _lit(value):
-            return str(value).replace("'", "''")
-
+        # call it on Spark 2.4.4 (no F.call_udf until 3.5).
         agg_exprs = [
             F.max(F.expr(
                 "IF(has_concept_in_context({code}, '{concept}', '{context}'), "
-                "1, 0)".format(code=code, concept=_lit(row['concept']),
-                               context=_lit(row['context']))
+                "1, 0)".format(code=code,
+                               concept=_discern_sql_lit(row['concept']),
+                               context=_discern_sql_lit(row['context']))
             )).alias(row['flag'])
             for row in flags
         ]
@@ -1192,6 +1192,19 @@ class ExtractItem(SharedMethodsMixin):
         the index" flag in the R analytic layer, as ``pciEvents`` feeds
         ``prior_pci``).
 
+        **Single physical scan:** all ``has_concept_in_context`` predicates are
+        evaluated in one Spark plan (``when`` tags → ``explode`` → drop nulls),
+        matching the old ``add_concept_indicators`` + stack shape and the
+        single-pass style of :meth:`extract_concept_flags`. Do **not** loop
+        filter+union per concept (that re-scans the source N times on Spark 2.4.4).
+
+        Output grain: one row per (source row × matching ``concept_flags`` row).
+        Two flag rows that share the same ``flag`` name (e.g. hmi 066 ``echo``
+        from two concepts) both matching the same source row yield **two** output
+        rows both tagged with that flag — same as the historical union semantics.
+        Duplicate flag names are intentional here (unlike :meth:`extract_concept_flags`,
+        which requires unique flag column names).
+
         Output columns: ``index_fields`` + ``datefield`` + ``flag`` (+ any
         ``retained_fields`` present in the source).
 
@@ -1207,9 +1220,10 @@ class ExtractItem(SharedMethodsMixin):
                 Mirrors entityExtract's windowing.
 
         Same crash-on-unknown-concept caveat as ``extract_concept_flags``: every
-        concept/context pair MUST be validated against the tabulation. The
-        cohort join uses only the person-level ``index_fields`` present in the
-        cohort table (so an ``encounterid`` in ``index_fields`` doesn't break it).
+        concept/context pair MUST be validated against the live concept catalog
+        (datadictrwd index / tabulation). The cohort join uses only the
+        person-level ``index_fields`` present in the cohort table (so an
+        ``encounterid`` in ``index_fields`` doesn't break it).
         """
         name = getattr(self, 'name', 'unknown')
         index_fields = (index_fields if index_fields is not None
@@ -1281,58 +1295,52 @@ class ExtractItem(SharedMethodsMixin):
             if histStop is not None:
                 source_df = source_df.filter(F.col(datefield) <= histStop)
 
-        # SQL-registered UDF -> F.expr string (Spark 2.4.4, no F.call_udf). Escape
-        # single quotes in the literals (see extract_concept_flags).
-        def _lit(value):
-            return str(value).replace("'", "''")
-
         keep = list(index_fields)
         if datefield and datefield not in keep:
             keep.append(datefield)
         for rf in retained_fields:
             if rf not in keep:
                 keep.append(rf)
+        # 'flag' is the reserved output label column (contract).
+        if 'flag' in keep:
+            raise ValueError(
+                "extract_concept_events on '{}': 'flag' is reserved for the "
+                "concept-match label and must not appear in index_fields, "
+                "datefield, or retained_fields (got keep={!r}).".format(
+                    name, keep))
 
-        def _keep_expr(field, available):
-            """Resolve a keep/retained field to a select expression.
+        # Resolve keep exprs once against the post-cohort / post-window source
+        # (all branches previously shared this same column set).
+        available = source_df.columns
+        if 'flag' in available:
+            raise ValueError(
+                "extract_concept_events on '{}': source already has a 'flag' "
+                "column; rename it before extract or drop it from the source "
+                "projection.".format(name))
+        exprs = [(c, _discern_keep_expr(c, available)) for c in keep]
+        dropped = [c for c, x in exprs if x is None]
+        if dropped:
+            logger.warning(
+                "extract_concept_events on '%s': keep/retained fields not found "
+                "in source, dropped: %s", name, dropped)
+        keep_cols = [x for _, x in exprs if x is not None]
+        if not keep_cols:
+            raise ValueError(
+                "extract_concept_events on '{}': no keep columns resolved from "
+                "{} (source columns: {}).".format(name, keep, available))
 
-            A dotted path ('typedvalue.numericValue.value') is pulled out of the
-            struct and aliased to the flattened name ('typedvalue_numericValue_value'),
-            matching flattenTable's convention so the output column is the same one
-            r.<source>.df would expose. This lets a caller keep a nested VALUE at
-            extract time (avoiding a second full-table join to attach it). Returns
-            None if the field (or its struct root) isn't present.
-            """
-            if field in available:
-                return F.col(field)
-            if '.' in field and field.split('.')[0] in available:
-                return F.col(field).alias(field.replace('.', '_'))
-            return None
-
-        parts = []
-        for row in flags:
-            matched = source_df.filter(
-                "has_concept_in_context({code}, '{concept}', '{context}')".format(
-                    code=code, concept=_lit(row['concept']),
-                    context=_lit(row['context']))
-            )
-            available = matched.columns
-            exprs = [(c, _keep_expr(c, available)) for c in keep]
-            dropped = [c for c, x in exprs if x is None]
-            if dropped:
-                # Previously these were dropped SILENTLY (a typo'd or nested retained
-                # field just vanished). Warn instead.
-                logger.warning(
-                    "extract_concept_events on '%s': keep/retained fields not found "
-                    "in source, dropped: %s", name, dropped)
-            parts.append(matched.select(
-                *[x for _, x in exprs if x is not None],
-                F.lit(row['flag']).alias('flag')))
-        # All parts share the same schema (same select), so a plain unionByName is
-        # safe on Spark 2.4.4 (no allowMissingColumns needed).
-        result = parts[0]
-        for extra in parts[1:]:
-            result = result.unionByName(extra)
+        # Single pass: one when-tag per concept_flags row → explode → drop nulls.
+        # Preserves union semantics for multi-match and same-flag duplicates.
+        # Spark 2.4.4: explode + isNotNull (not higher-order filter on array).
+        tag_exprs = _discern_match_tag_exprs(flags, code, label_key='flag')
+        logger.info(
+            "extract_concept_events on %s: %d concept predicates in single-pass plan",
+            name, len(tag_exprs))
+        result = (
+            source_df
+            .select(*keep_cols, F.explode(F.array(*tag_exprs)).alias('flag'))
+            .filter(F.col('flag').isNotNull())
+        )
 
         if set_self_df:
             self.df = result
@@ -1494,8 +1502,11 @@ class ExtractItem(SharedMethodsMixin):
           tenants, silently doubling counts);
         * uses a per-``group_by`` denominator DataFrame (not a scalar ``sample_n``),
           so percents are interpretable per tenant-year;
-        * counts via the proven ``has_concept_in_context`` SQL path (same as
-          :meth:`extract_concept_flags`), staying in Spark end to end.
+        * counts via the proven ``has_concept_in_context`` SQL path in a
+          **single physical scan** (when-tags + explode → long ``conceptName``,
+          same shape as :meth:`extract_concept_events`), staying in Spark end
+          to end. Do not loop filter+union per concept (N full scans on Spark
+          2.4.4 — the datadictrwd batching workaround).
 
         Args:
             source: source table (DataFrame or object with ``.df``).
@@ -1541,7 +1552,7 @@ class ExtractItem(SharedMethodsMixin):
         if isinstance(person, (list, tuple)):
             person = person[0]
 
-        self.push_discern(concept_flags=flags)          # push every distinct context
+        self.push_discern(concept_flags=flags)          # push every distinct context (subset)
 
         df = source.df if hasattr(source, 'df') else source
         if not isinstance(df, DataFrame):
@@ -1557,11 +1568,6 @@ class ExtractItem(SharedMethodsMixin):
         # don't silently drop unknown-date rows (Spark NULL != NULL). The datadict path
         # (single groupBy, no join) does NOT need this.
         df = _sentinel_unknown_dates(df, group_by)
-
-        def _lit(v):
-            # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
-            # parsed as adjacent-literal concatenation and silently drops the quote.
-            return str(v).replace("\\", "\\\\").replace("'", "\\'")
 
         # Project the code dims from the STRUCT — the source is the RAW table (the UDF
         # needs the struct), so the underscore columns don't exist yet. flat_schema gives
@@ -1591,18 +1597,20 @@ class ExtractItem(SharedMethodsMixin):
                 "build_ontology_*: person key '{}' not in source.".format(person))
         gb = group_by
         keep = [person] + gb + code_dims
-
-        # Melt: one filter+tag per concept, unioned (Spark 2.4.4 has no stack/melt).
-        parts = []
-        for row in flags:
-            expr = "has_concept_in_context({code}, '{c}', '{ctx}')".format(
-                code=codefield, c=_lit(row['concept']), ctx=_lit(row['context']))
-            parts.append(df.filter(F.expr(expr)).select(*keep)
-                         .withColumn('conceptName', F.lit(row['concept'])))
-        long = _union_aligned(parts)
-        if long is None:
+        if 'conceptName' in keep:
             raise ValueError(
-                "build_ontology_counts on '{}': no concepts produced rows.".format(name))
+                "build_ontology_counts on '{}': 'conceptName' is reserved for the "
+                "Discern match label and must not be in the keep set.".format(name))
+
+        # Single pass: when-tag each concept → explode → conceptName (not filter+union).
+        tag_exprs = _discern_match_tag_exprs(flags, codefield, label_key='concept')
+        logger.info(
+            "build_ontology_counts on %s: %d concept predicates in single-pass plan",
+            name, len(tag_exprs))
+        long = (
+            df.select(*keep, F.explode(F.array(*tag_exprs)).alias('conceptName'))
+            .filter(F.col('conceptName').isNotNull())
+        )
 
         # Three distinct-person counts; EVERY key derives from group_by.
         by_concept = long.groupBy(*(gb + ['conceptName'])).agg(
@@ -1705,14 +1713,12 @@ class ExtractItem(SharedMethodsMixin):
         # (single groupBy, no join) does NOT need this.
         df = _sentinel_unknown_dates(df, group_by)
 
-        def _lit(v):
-            # Spark 2.4 SQL uses BACKSLASH escaping in string literals; '' doubling is
-            # parsed as adjacent-literal concatenation and silently drops the quote.
-            return str(v).replace("\\", "\\\\").replace("'", "\\'")
-
         # mapped = 1 if the code maps to ANY concept in ANY context, else 0.
+        # Already single-pass (GREATEST of IFs) — same predicate style as counts/events.
         ors = ["IF(has_concept_in_context({code}, '{c}', '{ctx}'), 1, 0)".format(
-                   code=codefield, c=_lit(row['concept']), ctx=_lit(row['context']))
+                   code=codefield,
+                   c=_discern_sql_lit(row['concept']),
+                   ctx=_discern_sql_lit(row['context']))
                for row in flags]
         mapped_expr = ors[0] if len(ors) == 1 else "GREATEST({})".format(", ".join(ors))
         df = df.withColumn('mapped', F.expr(mapped_expr))
@@ -1753,6 +1759,75 @@ class ExtractItem(SharedMethodsMixin):
             self.df = result
             self._auto_write()
         return result
+
+
+def _discern_sql_lit(value):
+    """Escape a string for embedding in Spark 2.4 SQL string literals inside ``F.expr``.
+
+    Spark 2.4 uses **backslash** escaping in string literals; SQL-standard ``''``
+    doubling is parsed as adjacent-literal concatenation and silently drops the
+    quote. Shared by all Discern ``has_concept*`` expression builders.
+    """
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _discern_keep_expr(field, available):
+    """Resolve a keep/retained field to a select expression for Discern extracts.
+
+    A dotted path (``typedvalue.numericValue.value``) is pulled out of the struct
+    and aliased to the flattened name (``typedvalue_numericValue_value``), matching
+    flattenTable's convention so the output column is the same one ``r.<source>.df``
+    would expose. Returns None if the field (or its struct root) is not present.
+    """
+    if field in available:
+        return F.col(field)
+    if '.' in field and field.split('.')[0] in available:
+        return F.col(field).alias(field.replace('.', '_'))
+    return None
+
+
+def _discern_match_tag_exprs(flags, code, label_key='flag'):
+    """Build one ``F.when(has_concept_in_context(...), lit(label))`` per flag row.
+
+    Used by :meth:`ExtractItem.extract_concept_events` (``label_key='flag'``) and
+    :meth:`ExtractItem.build_ontology_counts` (``label_key='concept'`` →
+    ``conceptName``). All expressions are meant to be evaluated in **one**
+    ``F.array(... )`` + ``explode`` so Spark does a single scan.
+
+    Parameters:
+        flags: list of dicts with ``concept``, ``context``, and the label key.
+        code (str): name of the code STRUCT column (identifier, not a literal).
+        label_key (str): key whose value becomes the non-null tag (``flag`` or
+            ``concept``).
+
+    Returns:
+        list of pyspark Column expressions (null when the concept does not match).
+    """
+    tag_exprs = []
+    for row in flags:
+        label = row[label_key]
+        pred = (
+            "has_concept_in_context({code}, '{concept}', '{context}')".format(
+                code=code,
+                concept=_discern_sql_lit(row['concept']),
+                context=_discern_sql_lit(row['context']),
+            )
+        )
+        tag_exprs.append(F.when(F.expr(pred), F.lit(label)))
+    return tag_exprs
+
+
+def _discern_context_concept_subsets(flags):
+    """Group concept_flags into ``{context: [unique concepts in order]}``.
+
+    Used by tests and documentation of the push_discern subset contract.
+    """
+    to_push = {}
+    for row in flags:
+        lst = to_push.setdefault(row['context'], [])
+        if row['concept'] not in lst:
+            lst.append(row['concept'])
+    return to_push
 
 
 def _derive_date_parts(df, datefield, group_by):
