@@ -112,6 +112,9 @@ raw PySpark only when nothing in the package covers it.
 | per-person `.groupBy([id]).agg(F.min/max/avg/count(val))` | `aggregate_fields(df, index, values, aggfuncs, aggfunc_names)` |
 | `F.to_date(F.col('datetimeX'))` on an `r.*` flattened column | use the flatten's pre-made **`dateX`** column — `config-RWD.yaml` emits a `date<X>` for every `datetime<X>`; don't re-derive it |
 | `spark.read.csv(path)` | `e.X.load_csv_as_df()` (path from `csv:` in `000-control.yaml projectTables`) |
+| `x = e.X.df` (binding an item's frame to a local) | use `e.X` directly — see [§2b](#2b-count-the-passes--uses-the-method-is-necessary-not-sufficient). Every hand-rolled block in one reviewed notebook traced back to an alias |
+| `e.X.df = <frame>; e.X.write()` then reading `e.X` again | `write_safe()` — it rebinds `.df` to the persisted table; `write()` leaves the lazy plan, so each later action re-executes it |
+| `.select(index_cols).distinct()` on an item that IS the index | nothing — an index is already distinct. Only `distinct()` when reducing grain (encounter → person) |
 
 Most extraction pipelines are the **load → verify → extract → reduce** chain:
 `load_csv_as_df` (codes) → **`create_extract`** (VERIFY the codes against the dictionary —
@@ -133,6 +136,61 @@ e.codes.df.tabulate(group_cols=['group'])             # BAD — tabulate is not 
 Before writing a new helper, grep the generated package API
 (`~/projects/hdl-harness/docs/api_reference.md`) for an existing function rather than
 re-implementing it.
+
+### 2b. Count the passes — "uses the method" is necessary, not sufficient
+
+§2 asks *"is there a method for this line?"* That is the right first question and it is not the
+only one. Three multi-hour failures in Aug 2026 all **passed §2** — the methods were used, with
+correct arguments — and still cost 4–6 hours each, because of a different axis:
+
+> **How many times will the big table be read?**
+>
+> The cost is not the operation. It is the operation **×** the number of things that re-execute
+> it. A join that is cheap once is not cheap when four actions each re-run it.
+
+Ask it of every large frame. The multiplier has three usual sources:
+
+| Multiplier | Looks like | Measured cost |
+|---|---|---|
+| **N actions on a lazy frame** | `write()` then `to_csv()` then `attrition()` then a `count()` — each re-runs the whole plan | hmi 040: broadcast-join timeout at **4h07m** |
+| **N sections re-deriving one thing** | three sections each rebuild "labs inside encounter X" from lazy inputs | same notebook; fixed by building it **once** |
+| **N branches unioned** | one filter per concept, then `union` — on Spark 2.4.4 union branches do **not** share a file scan | `extract_concept_events`: hmi 066 **killed at 6h, twice**; single-pass fix → 035 went **6h05m → 65 min** |
+
+The last row is the important one for calibration: that was a **package** method being used exactly
+as documented. No caller review could have caught it. If a notebook is slow and every line already
+uses the right method, the answer is upstream — count the scans before assuming the notebook is at
+fault.
+
+#### The three fixes
+
+| Symptom | Fix |
+|---|---|
+| An intermediate that more than one thing reads | Build it **once** through a method that auto-writes (`entityExtract`, `write_index_table`, `create_extract`) so downstream reads a **materialized table**, not a plan |
+| `.df` set manually, then `write()`, then read again | **`write_safe()`**, not `write()`. `write_safe` rebinds `.df` to the persisted table (and breaks read→write lineage); `write()` leaves `.df` as the lazy plan, so everything after it re-executes |
+| Printing a count | `attrition()` — it prints records **and** distinct persons. A `print(f"{df.count()}")` beside an `attrition()` call is a second full pass to print a number `attrition` was about to print |
+
+#### Do not bind `.df` to a local
+
+§2 says call methods on `e.X`, not `e.X.df`. The upstream cause is holding `.df` in a variable at
+all:
+
+```python
+trop = e.troponinLabsStd.df      # BAD — from here, the ExtractItem's methods are not in front of
+                                 # you, and you will write raw Spark instead
+e.troponinLabsStd.attrition()    # GOOD — and tabulate() has a free-function form
+                                 # (`from lhn import tabulate`) for ad-hoc frames, so a filtered
+                                 # frame is still no reason to hand-roll a groupBy
+```
+
+In hmi 040 **every** hand-rolled block traced back to one of these aliases: one produced the manual
+counts and a manual `groupBy`; one reinvented a config node that already existed; one produced a
+`select(...).distinct()` over an item that was **already** the person index — a shuffle that
+changed nothing.
+
+That last one is worth stating on its own: **an index is already distinct.** `persontenant` is
+`entityExtract` at person grain with `indexFields ['personid','tenant']`, so
+`.select('personid','tenant').distinct()` over it is pure cost. A `distinct()` is only real when it
+reduces grain (encounter → person).
 
 ### 3. Bootstrap: bind spark first, then `pipeline_setup`
 
