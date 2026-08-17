@@ -1485,9 +1485,156 @@ class ExtractItem(SharedMethodsMixin):
             self._auto_write()
         return result
 
+    def build_code_concept_map(self, source, concept_flags=None, codefield=None,
+                               source_table=None, set_self_df=True):
+        """Persisted ``code → concept`` map: evaluate Discern membership ONCE per
+        DISTINCT code, not once per data row.
+
+        Concept membership (``has_concept_in_context``) is a pure function of
+        ``(code struct, concept, context)`` — it does not vary by person, tenant, or
+        year. Tabulating a billion-row table therefore never needs the UDF on the
+        hot path: run it over the table's **distinct code structs** (thousands of
+        rows), persist the resulting map, and let every consumer
+        (:meth:`build_ontology_counts` / :meth:`build_ontology_coverage` via their
+        ``concept_map`` parameter, cohort extractions, offline R work) JOIN it.
+        Cost drops from O(rows × concepts × re-runs) UDF calls to
+        O(distinct codes × concepts) once per Discern/index refresh.
+
+        Output rows exist only for MATCHES — a code absent from the map is unmapped
+        (coverage derives ``mapped = 0`` by left-joining the inventory against it).
+
+        Args:
+            source: RAW source table (DataFrame or object with ``.df``) — the code
+                STRUCT must be intact (the UDF needs the coding system inside it).
+            concept_flags (list[dict] | None): ``{concept, context}`` rows; falls
+                back to ``self.concept_flags``.
+            codefield (str | None): the code STRUCT column; falls back to
+                ``self.codefield`` then ``self.conditionCodefield``.
+            source_table (str | None): value for the ``source_table`` provenance
+                column; falls back to ``self.sourceTable`` then the item name.
+            set_self_df (bool): set ``self.df`` and auto-write (default True).
+
+        Returns:
+            pyspark.sql.DataFrame: one row per (``source_table``, ``codefield``,
+            code dims, ``conceptName``, ``contextId``) — flat, indexable, no struct.
+        """
+        name = getattr(self, 'name', 'unknown')
+        flags = (concept_flags if concept_flags is not None
+                 else getattr(self, 'concept_flags', None))
+        if not flags:
+            raise ValueError(
+                "build_code_concept_map on '{}': no concept_flags (list of "
+                "{{concept, context}} dicts).".format(name))
+        for i, row in enumerate(flags):
+            miss = [k for k in ('concept', 'context') if k not in row]
+            if miss:
+                raise ValueError(
+                    "build_code_concept_map on '{}': concept_flags[{}] missing {} "
+                    "({!r}).".format(name, i, miss, row))
+        codefield = (codefield or getattr(self, 'codefield', None)
+                     or getattr(self, 'conditionCodefield', None))
+        if not codefield:
+            raise ValueError(
+                "build_code_concept_map on '{}': no codefield.".format(name))
+        source_table = (source_table or getattr(self, 'sourceTable', None) or name)
+
+        self.push_discern(concept_flags=flags)
+
+        df = source.df if hasattr(source, 'df') else source
+        if not isinstance(df, DataFrame):
+            raise ValueError(
+                "build_code_concept_map on '{}': source has no DataFrame "
+                "(got {}).".format(name, type(df).__name__))
+        if codefield not in df.columns:
+            raise ValueError(
+                "build_code_concept_map on '{}': codefield '{}' not in source "
+                "(columns: {}).".format(name, codefield, df.columns))
+
+        # THE point of this method: distinct code structs first (struct equality),
+        # then the single-pass when-tag + explode over that small set only.
+        codes = df.select(F.col(codefield)).distinct()
+        tag_exprs = _discern_match_tag_exprs(flags, codefield, label_key='concept')
+        logger.info(
+            "build_code_concept_map on %s: %d concept predicates over DISTINCT "
+            "codes of %s.%s", name, len(tag_exprs), source_table, codefield)
+        matched = (
+            codes.select(F.col(codefield),
+                         F.explode(F.array(*tag_exprs)).alias('conceptName'))
+            .filter(F.col('conceptName').isNotNull())
+        )
+
+        # Flatten the code dims for the persisted product (no struct in the output).
+        from spark_config_mapper import flat_schema
+        dot_paths = set(flat_schema(df))
+        code_dims = []
+        for _sub, _suffix in (('standard.id', '_standard_id'),
+                              ('standard.codingSystemId', '_standard_codingSystemId'),
+                              ('standard.primaryDisplay', '_standard_primaryDisplay')):
+            if (codefield + '.' + _sub) in dot_paths:
+                _canon = codefield + _suffix
+                matched = matched.withColumn(_canon, F.col(codefield + '.' + _sub))
+                code_dims.append(_canon)
+        if not code_dims:
+            raise ValueError(
+                "build_code_concept_map on '{}': no code dims resolved from struct "
+                "'{}' (expected '{}.standard.id' etc.).".format(
+                    name, codefield, codefield))
+
+        # Context provenance: join the (small) flags list on conceptName. A concept
+        # listed under two contexts yields one row per context — provenance, not
+        # duplication (consumers join on code dims + conceptName).
+        ctx_rows = sorted({(str(r['concept']), str(r['context'])) for r in flags})
+        ctx_df = df.sql_ctx.createDataFrame(ctx_rows, ['conceptName', 'contextId'])
+        result = (
+            matched
+            .join(ctx_df, on='conceptName', how='left')
+            .select(F.lit(str(source_table)).alias('source_table'),
+                    F.lit(str(codefield)).alias('codefield'),
+                    *code_dims, 'conceptName', 'contextId')
+            .distinct()
+        )
+
+        if set_self_df:
+            self.df = result
+            self._auto_write()
+        return result
+
+    @staticmethod
+    def _concept_map_join(df, concept_map, codefield, code_dims):
+        """Normalize a precomputed concept map for joining against ``df``'s code dims.
+
+        Joins on ``<codefield>_standard_id`` + ``_standard_codingSystemId`` (id +
+        coding system identify a code; ``primaryDisplay`` is display text that can
+        drift between rows and would silently DROP matches if joined on). Returns
+        (map_df_selected, join_keys). Raises when the map lacks the join keys.
+        """
+        m = concept_map.df if hasattr(concept_map, 'df') else concept_map
+        if not isinstance(m, DataFrame):
+            raise ValueError(
+                "concept_map must be a DataFrame or have .df (got {}).".format(
+                    type(m).__name__))
+        join_keys = [c for c in (codefield + '_standard_id',
+                                 codefield + '_standard_codingSystemId')
+                     if c in code_dims]
+        if not join_keys:
+            raise ValueError(
+                "concept_map join: no id/codingSystemId dims resolved for '{}' — "
+                "cannot join a map without code identity.".format(codefield))
+        missing = [k for k in join_keys if k not in m.columns]
+        if missing:
+            raise ValueError(
+                "concept_map is missing join keys {} (map columns: {}). Was it "
+                "built by build_code_concept_map for codefield '{}'?".format(
+                    missing, m.columns, codefield))
+        if 'conceptName' not in m.columns:
+            raise ValueError("concept_map has no 'conceptName' column.")
+        if 'codefield' in m.columns:
+            m = m.filter(F.col('codefield') == codefield)
+        return m.select(*join_keys, 'conceptName').distinct(), join_keys
+
     def build_ontology_counts(self, source, concept_flags=None, codefield=None,
                               group_by=None, sample_n=None, datefield=None,
-                              set_self_df=True):
+                              set_self_df=True, concept_map=None):
         """Tabulate Discern concept / coding-system / code counts + percents per
         ``group_by`` (e.g. ``['tenant', 'year']``) x concept — Spark-native, no pandas.
 
@@ -1522,6 +1669,12 @@ class ExtractItem(SharedMethodsMixin):
                 persons per ``group_by`` from the source.
             datefield (str | list[str] | None): date column(s) to derive year/month.
             set_self_df (bool): set ``self.df`` and auto-write (default True).
+            concept_map: precomputed ``code → concept`` map (DataFrame or object
+                with ``.df``) from :meth:`build_code_concept_map`. When given, the
+                Discern UDF never runs — membership comes from a JOIN on the code
+                identity dims, and ``concept_flags`` is not required. This is the
+                fast path for repeated tabulations (per year × tenant) of the same
+                ontology: evaluate once per distinct code, join everywhere.
 
         Returns:
             pyspark.sql.DataFrame: one row per (``group_by``, ``conceptName``, coding
@@ -1531,16 +1684,17 @@ class ExtractItem(SharedMethodsMixin):
         group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
         flags = (concept_flags if concept_flags is not None
                  else getattr(self, 'concept_flags', None))
-        if not flags:
+        if not flags and concept_map is None:
             raise ValueError(
-                "build_ontology_counts on '{}': no concept_flags (list of "
-                "{{concept, context}} dicts).".format(name))
-        for i, row in enumerate(flags):
-            miss = [k for k in ('concept', 'context') if k not in row]
-            if miss:
-                raise ValueError(
-                    "build_ontology_counts on '{}': concept_flags[{}] missing {} "
-                    "({!r}).".format(name, i, miss, row))
+                "build_ontology_counts on '{}': need concept_flags (list of "
+                "{{concept, context}} dicts) or a precomputed concept_map.".format(name))
+        if concept_map is None:
+            for i, row in enumerate(flags):
+                miss = [k for k in ('concept', 'context') if k not in row]
+                if miss:
+                    raise ValueError(
+                        "build_ontology_counts on '{}': concept_flags[{}] missing {} "
+                        "({!r}).".format(name, i, miss, row))
         codefield = (codefield or getattr(self, 'codefield', None)
                      or getattr(self, 'conditionCodefield', None))
         if not codefield:
@@ -1552,7 +1706,8 @@ class ExtractItem(SharedMethodsMixin):
         if isinstance(person, (list, tuple)):
             person = person[0]
 
-        self.push_discern(concept_flags=flags)          # push every distinct context (subset)
+        if concept_map is None:
+            self.push_discern(concept_flags=flags)      # push every distinct context (subset)
 
         df = source.df if hasattr(source, 'df') else source
         if not isinstance(df, DataFrame):
@@ -1602,15 +1757,25 @@ class ExtractItem(SharedMethodsMixin):
                 "build_ontology_counts on '{}': 'conceptName' is reserved for the "
                 "Discern match label and must not be in the keep set.".format(name))
 
-        # Single pass: when-tag each concept → explode → conceptName (not filter+union).
-        tag_exprs = _discern_match_tag_exprs(flags, codefield, label_key='concept')
-        logger.info(
-            "build_ontology_counts on %s: %d concept predicates in single-pass plan",
-            name, len(tag_exprs))
-        long = (
-            df.select(*keep, F.explode(F.array(*tag_exprs)).alias('conceptName'))
-            .filter(F.col('conceptName').isNotNull())
-        )
+        if concept_map is not None:
+            # Fast path: membership by JOIN against the persisted per-code map —
+            # zero UDF evaluations on this (possibly billion-row) source.
+            map_df, join_keys = self._concept_map_join(
+                df, concept_map, codefield, code_dims)
+            logger.info(
+                "build_ontology_counts on %s: joining precomputed concept_map on %s",
+                name, join_keys)
+            long = df.select(*keep).join(map_df, on=join_keys, how='inner')
+        else:
+            # Single pass: when-tag each concept → explode → conceptName (not filter+union).
+            tag_exprs = _discern_match_tag_exprs(flags, codefield, label_key='concept')
+            logger.info(
+                "build_ontology_counts on %s: %d concept predicates in single-pass plan",
+                name, len(tag_exprs))
+            long = (
+                df.select(*keep, F.explode(F.array(*tag_exprs)).alias('conceptName'))
+                .filter(F.col('conceptName').isNotNull())
+            )
 
         # Three distinct-person counts; EVERY key derives from group_by.
         by_concept = long.groupBy(*(gb + ['conceptName'])).agg(
@@ -1652,7 +1817,8 @@ class ExtractItem(SharedMethodsMixin):
         return counts
 
     def build_ontology_coverage(self, source, concept_flags=None, codefield=None,
-                                group_by=None, datefield=None, set_self_df=True):
+                                group_by=None, datefield=None, set_self_df=True,
+                                concept_map=None):
         """Per (``group_by``, code): distinct-person count + whether the code maps to
         ANY concept in the given Discern contexts — so the **UNMAPPED** codes
         (``mapped = 0``) can be reviewed as a coverage gap.
@@ -1666,7 +1832,9 @@ class ExtractItem(SharedMethodsMixin):
 
         Args mirror :meth:`build_ontology_counts` (``concept_flags`` = ``{concept,
         context}`` rows; ``codefield`` = the code STRUCT; ``group_by`` falls back to
-        ``self.groupBy`` then ``['tenant', 'year']``; ``datefield`` derives year/month).
+        ``self.groupBy`` then ``['tenant', 'year']``; ``datefield`` derives year/month;
+        ``concept_map`` = precomputed map from :meth:`build_code_concept_map` — when
+        given, ``mapped`` comes from a JOIN on code identity and the UDF never runs).
 
         Returns:
             pyspark.sql.DataFrame: one row per (``group_by``, code fields) with ``count``
@@ -1676,15 +1844,17 @@ class ExtractItem(SharedMethodsMixin):
         group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
         flags = (concept_flags if concept_flags is not None
                  else getattr(self, 'concept_flags', None))
-        if not flags:
+        if not flags and concept_map is None:
             raise ValueError(
-                "build_ontology_coverage on '{}': no concept_flags.".format(name))
-        for i, row in enumerate(flags):
-            miss = [k for k in ('concept', 'context') if k not in row]
-            if miss:
-                raise ValueError(
-                    "build_ontology_coverage on '{}': concept_flags[{}] missing {} "
-                    "({!r}).".format(name, i, miss, row))
+                "build_ontology_coverage on '{}': need concept_flags or a "
+                "precomputed concept_map.".format(name))
+        if concept_map is None:
+            for i, row in enumerate(flags):
+                miss = [k for k in ('concept', 'context') if k not in row]
+                if miss:
+                    raise ValueError(
+                        "build_ontology_coverage on '{}': concept_flags[{}] missing {} "
+                        "({!r}).".format(name, i, miss, row))
         codefield = (codefield or getattr(self, 'codefield', None)
                      or getattr(self, 'conditionCodefield', None))
         if not codefield:
@@ -1696,7 +1866,8 @@ class ExtractItem(SharedMethodsMixin):
         if isinstance(person, (list, tuple)):
             person = person[0]
 
-        self.push_discern(concept_flags=flags)
+        if concept_map is None:
+            self.push_discern(concept_flags=flags)
 
         df = source.df if hasattr(source, 'df') else source
         if not isinstance(df, DataFrame):
@@ -1712,16 +1883,6 @@ class ExtractItem(SharedMethodsMixin):
         # don't silently drop unknown-date rows (Spark NULL != NULL). The datadict path
         # (single groupBy, no join) does NOT need this.
         df = _sentinel_unknown_dates(df, group_by)
-
-        # mapped = 1 if the code maps to ANY concept in ANY context, else 0.
-        # Already single-pass (GREATEST of IFs) — same predicate style as counts/events.
-        ors = ["IF(has_concept_in_context({code}, '{c}', '{ctx}'), 1, 0)".format(
-                   code=codefield,
-                   c=_discern_sql_lit(row['concept']),
-                   ctx=_discern_sql_lit(row['context']))
-               for row in flags]
-        mapped_expr = ors[0] if len(ors) == 1 else "GREATEST({})".format(", ".join(ors))
-        df = df.withColumn('mapped', F.expr(mapped_expr))
 
         # Project the code dims from the STRUCT — the source is the RAW table (the UDF
         # needs the struct), so the underscore columns don't exist yet. flat_schema gives
@@ -1741,6 +1902,25 @@ class ExtractItem(SharedMethodsMixin):
             raise ValueError(
                 "build_ontology_*: no code dims resolved from struct '{}' (expected "
                 "'{}.standard.id' etc. in the source).".format(codefield, codefield))
+
+        if concept_map is not None:
+            # mapped = code identity present in the precomputed map (no UDF).
+            map_df, join_keys = self._concept_map_join(
+                df, concept_map, codefield, code_dims)
+            mapped_keys = (map_df.select(*join_keys).distinct()
+                           .withColumn('mapped', F.lit(1)))
+            df = df.join(mapped_keys, on=join_keys, how='left')
+            df = df.withColumn('mapped', F.coalesce(F.col('mapped'), F.lit(0)))
+        else:
+            # mapped = 1 if the code maps to ANY concept in ANY context, else 0.
+            # Already single-pass (GREATEST of IFs) — same predicate style as counts/events.
+            ors = ["IF(has_concept_in_context({code}, '{c}', '{ctx}'), 1, 0)".format(
+                       code=codefield,
+                       c=_discern_sql_lit(row['concept']),
+                       ctx=_discern_sql_lit(row['context']))
+                   for row in flags]
+            mapped_expr = ors[0] if len(ors) == 1 else "GREATEST({})".format(", ".join(ors))
+            df = df.withColumn('mapped', F.expr(mapped_expr))
         system = codefield + '_standard_codingSystemId'
         missing = [g for g in group_by if g not in df.columns]
         if missing:
