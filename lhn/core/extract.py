@@ -1503,6 +1503,13 @@ class ExtractItem(SharedMethodsMixin):
         Output rows exist only for MATCHES — a code absent from the map is unmapped
         (coverage derives ``mapped = 0`` by left-joining the inventory against it).
 
+        ``contextId`` is per-call PROVENANCE: it is attached by joining this call's
+        flags on ``conceptName``, so it is context-accurate only when each call's
+        flags share one context (the 013 driver batches by context, so they do).
+        Multi-context concepts do not change the AGGREGATED counts/coverage
+        products either way — both the UDF path and the map path group by
+        ``conceptName``, so per-context duplicates collapse identically.
+
         Args:
             source: RAW source table (DataFrame or object with ``.df``) — the code
                 STRUCT must be intact (the UDF needs the coding system inside it).
@@ -1616,10 +1623,14 @@ class ExtractItem(SharedMethodsMixin):
         join_keys = [c for c in (codefield + '_standard_id',
                                  codefield + '_standard_codingSystemId')
                      if c in code_dims]
-        if not join_keys:
+        if len(join_keys) < 2:
+            # BOTH keys or refuse: an id-only join would merge identically-numbered
+            # codes across coding systems (e.g. an ICD id colliding with a SNOMED id).
             raise ValueError(
-                "concept_map join: no id/codingSystemId dims resolved for '{}' — "
-                "cannot join a map without code identity.".format(codefield))
+                "concept_map join: need BOTH '{0}_standard_id' and "
+                "'{0}_standard_codingSystemId' resolved from the source struct "
+                "(got {1}) — an id-only join merges codes across coding "
+                "systems.".format(codefield, join_keys))
         missing = [k for k in join_keys if k not in m.columns]
         if missing:
             raise ValueError(
