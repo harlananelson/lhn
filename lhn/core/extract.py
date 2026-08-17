@@ -1622,6 +1622,11 @@ class ExtractItem(SharedMethodsMixin):
         tables, while the 013 uniformity QC only guarantees within-table
         consistency. Filter the map by ``source_table`` before passing it here if
         that distinction matters for your spec.
+
+        NULL identity keys never join: a code struct with NULL ``standard.id`` (or
+        NULL codingSystemId) is UNMAPPED BY CONSTRUCTION on this fast path, even
+        if the struct-level UDF would have matched it. 013's QC prints the
+        NULL-identity count per pair so the size of that population is visible.
         """
         m = concept_map.df if hasattr(concept_map, 'df') else concept_map
         if not isinstance(m, DataFrame):
