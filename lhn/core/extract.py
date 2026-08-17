@@ -1614,6 +1614,14 @@ class ExtractItem(SharedMethodsMixin):
         coding system identify a code; ``primaryDisplay`` is display text that can
         drift between rows and would silently DROP matches if joined on). Returns
         (map_df_selected, join_keys). Raises when the map lacks the join keys.
+
+        NOTE: the map is filtered on ``codefield`` but NOT ``source_table`` — map
+        rows merge across source tables per codefield. Under the default spec
+        codefield names are table-unique so this is moot; under an extended spec
+        with same-named codefields (e.g. ``status``) membership merges across
+        tables, while the 013 uniformity QC only guarantees within-table
+        consistency. Filter the map by ``source_table`` before passing it here if
+        that distinction matters for your spec.
         """
         m = concept_map.df if hasattr(concept_map, 'df') else concept_map
         if not isinstance(m, DataFrame):
