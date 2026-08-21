@@ -1033,7 +1033,11 @@ class ExtractItem(SharedMethodsMixin):
             # ontology subset hundreds of times per session, and the push — not
             # the tiny distinct-code UDF work — dominates the wall clock. The
             # memo is per-process: a kernel restart clears it and the first call
-            # pushes again, so correctness never depends on it.
+            # pushes again, so correctness never depends on it. SCOPE: the memo
+            # preserves semantics for the context-qualified *_in_context UDF
+            # family only — a caller relying on a REPEAT push to re-ACTIVATE a
+            # context for bare has_concept/has_any_concept must push a different
+            # key or restart the kernel (no current lhn/datadictrwd path does).
             memo_key = (root, ver, ctx,
                         tuple(ctx_concepts) if ctx_concepts is not None else None)
             if memo_key in _DISCERN_PUSH_MEMO:
