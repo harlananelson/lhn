@@ -1026,8 +1026,24 @@ class ExtractItem(SharedMethodsMixin):
                     getattr(self, 'name', 'unknown')))
 
         for ctx, ctx_concepts in to_push.items():
+            # Session memo: an IDENTICAL push (same root/version/context/concepts)
+            # is a no-op — the broadcast is already on the cluster. Without this,
+            # batch-driven callers (datadictrwd 013: one build_code_concept_map
+            # call per (table x concept-batch) unit) re-broadcast the same
+            # ontology subset hundreds of times per session, and the push — not
+            # the tiny distinct-code UDF work — dominates the wall clock. The
+            # memo is per-process: a kernel restart clears it and the first call
+            # pushes again, so correctness never depends on it.
+            memo_key = (root, ver, ctx,
+                        tuple(ctx_concepts) if ctx_concepts is not None else None)
+            if memo_key in _DISCERN_PUSH_MEMO:
+                logger.info("push_discern SKIP (already pushed this session): "
+                            "context=%s (%d concepts)", ctx,
+                            len(ctx_concepts or []))
+                continue
             _push_discern(spark, discern_context=ctx, version=ver,
                           discern_root=root, concepts=ctx_concepts)
+            _DISCERN_PUSH_MEMO.add(memo_key)
             logger.info("push_discern OK: context=%s concepts=%s root=%s",
                         ctx, ctx_concepts, root)
 
@@ -1963,6 +1979,11 @@ class ExtractItem(SharedMethodsMixin):
             self.df = result
             self._auto_write()
         return result
+
+
+# Identical Discern pushes already made in THIS process (see push_discern's memo
+# note). Module-level so every ExtractItem in the session shares it.
+_DISCERN_PUSH_MEMO = set()
 
 
 def _discern_sql_lit(value):
