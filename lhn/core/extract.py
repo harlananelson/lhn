@@ -1038,17 +1038,32 @@ class ExtractItem(SharedMethodsMixin):
             # Per-process: a kernel restart clears it, so correctness never
             # depends on the memo. SCOPE: preserves semantics for the
             # context-qualified *_in_context family only — re-ACTIVATION for
-            # bare has_concept/has_any_concept needs a real push (no current
-            # lhn/datadictrwd path relies on that).
-            memo_key = (root, ver, ctx)
-            want = tuple(ctx_concepts) if ctx_concepts is not None else None
+            # bare has_concept/has_any_concept needs a real push, and mixing RAW
+            # foresight.discern pushes (hmi-055 style) with lhn extract methods
+            # in one session stales this memo (no current lhn/datadictrwd path
+            # does either).
+            # Key by CONTEXT alone (the UDF's resolution unit); compare
+            # (root, version, subset) as the VALUE — a same-context push from a
+            # different root/version replaces state too (the v1->v2 fallback).
+            # The subset is SORTED: the JVM stores a set, so order never matters.
+            memo_key = ctx
+            want = (root, ver,
+                    tuple(sorted(ctx_concepts)) if ctx_concepts is not None else None)
             if _DISCERN_PUSH_LAST.get(memo_key, _MISSING) == want:
                 logger.info("push_discern SKIP (context already holds this "
                             "subset): context=%s (%d concepts)", ctx,
                             len(ctx_concepts or []))
                 continue
-            _push_discern(spark, discern_context=ctx, version=ver,
-                          discern_root=root, concepts=ctx_concepts)
+            try:
+                _push_discern(spark, discern_context=ctx, version=ver,
+                              discern_root=root, concepts=ctx_concepts)
+            except BaseException:
+                # After a FAILED push the context's broadcast state is unknowable
+                # (the JVM may have partially replaced value sets before raising).
+                # 'Absent' — forcing a re-push next time — is the only truthful
+                # memo state.
+                _DISCERN_PUSH_LAST.pop(memo_key, None)
+                raise
             _DISCERN_PUSH_LAST[memo_key] = want
             logger.info("push_discern OK: context=%s concepts=%s root=%s",
                         ctx, ctx_concepts, root)
@@ -1987,15 +2002,17 @@ class ExtractItem(SharedMethodsMixin):
         return result
 
 
-# LAST Discern push per (root, version, context) in THIS process (see
-# push_discern's memo note). Module-level so every ExtractItem shares it.
-# A DICT of the last-pushed concepts per context — NOT a set of every push ever
-# made: pushing a context loads that call's concept SUBSET, and a later push of
-# the SAME context with a DIFFERENT subset REPLACES the broadcast value sets.
-# The original set-based memo skipped a re-push whose subset had since been
-# replaced, and the UDF threw 'Unknown value set reference' on the first
-# no-longer-loaded concept (datadictrwd 013 QC differential, 2026-08-24). Skip
-# is safe ONLY when the context's CURRENT subset equals the requested one.
+# LAST Discern push per CONTEXT in THIS process (see push_discern's memo note).
+# Module-level so every ExtractItem shares it. Key = context GUID alone — the
+# UDF resolves by context, so a push of the same context from a DIFFERENT root
+# or version also replaces its state; root/version live in the compared VALUE
+# (root, version, concepts-tuple). A dict of last state — NOT a set of every
+# push ever made: pushing a context loads that call's concept SUBSET, and a
+# later push of the SAME context REPLACES the broadcast value sets. The original
+# set-based memo skipped a re-push whose subset had since been replaced, and the
+# UDF threw 'Unknown value set reference' (datadictrwd 013 QC differential,
+# 2026-08-24). Skip is safe ONLY when the context's CURRENT (root, version,
+# subset) equals the requested one.
 _DISCERN_PUSH_LAST = {}
 _MISSING = object()   # sentinel: distinguishes 'never pushed' from 'pushed with None'
 
