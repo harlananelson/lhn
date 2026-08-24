@@ -1026,28 +1026,45 @@ class ExtractItem(SharedMethodsMixin):
                     getattr(self, 'name', 'unknown')))
 
         for ctx, ctx_concepts in to_push.items():
-            # Session memo: an IDENTICAL push (same root/version/context/concepts)
-            # is a no-op — the broadcast is already on the cluster. Without this,
-            # batch-driven callers (datadictrwd 013: one build_code_concept_map
-            # call per (table x concept-batch) unit) re-broadcast the same
-            # ontology subset hundreds of times per session, and the push — not
-            # the tiny distinct-code UDF work — dominates the wall clock. The
-            # memo is per-process: a kernel restart clears it and the first call
-            # pushes again, so correctness never depends on it. SCOPE: the memo
-            # preserves semantics for the context-qualified *_in_context UDF
-            # family only — a caller relying on a REPEAT push to re-ACTIVATE a
-            # context for bare has_concept/has_any_concept must push a different
-            # key or restart the kernel (no current lhn/datadictrwd path does).
-            memo_key = (root, ver, ctx,
-                        tuple(ctx_concepts) if ctx_concepts is not None else None)
-            if memo_key in _DISCERN_PUSH_MEMO:
-                logger.info("push_discern SKIP (already pushed this session): "
-                            "context=%s (%d concepts)", ctx,
+            # Session memo: skip ONLY when this context's CURRENT broadcast state
+            # (the LAST subset pushed for it) equals the requested one. Pushing a
+            # context loads that call's concept subset and REPLACES the previous
+            # one, so "pushed earlier this session" is NOT sufficient — the 013
+            # QC differential hit 'Unknown value set reference' when a set-based
+            # memo skipped re-pushing a subset a later batch had replaced.
+            # Without the memo, batch-driven callers (one build_code_concept_map
+            # call per table x concept-batch unit) re-broadcast the same subset
+            # hundreds of times; with it, consecutive same-batch calls are free.
+            # Per-process: a kernel restart clears it, so correctness never
+            # depends on the memo. SCOPE: preserves semantics for the
+            # context-qualified *_in_context family only — re-ACTIVATION for
+            # bare has_concept/has_any_concept needs a real push, and mixing RAW
+            # foresight.discern pushes (hmi-055 style) with lhn extract methods
+            # in one session stales this memo (no current lhn/datadictrwd path
+            # does either).
+            # Key by CONTEXT alone (the UDF's resolution unit); compare
+            # (root, version, subset) as the VALUE — a same-context push from a
+            # different root/version replaces state too (the v1->v2 fallback).
+            # The subset is SORTED: the JVM stores a set, so order never matters.
+            memo_key = ctx
+            want = (root, ver,
+                    tuple(sorted(ctx_concepts)) if ctx_concepts is not None else None)
+            if _DISCERN_PUSH_LAST.get(memo_key, _MISSING) == want:
+                logger.info("push_discern SKIP (context already holds this "
+                            "subset): context=%s (%d concepts)", ctx,
                             len(ctx_concepts or []))
                 continue
-            _push_discern(spark, discern_context=ctx, version=ver,
-                          discern_root=root, concepts=ctx_concepts)
-            _DISCERN_PUSH_MEMO.add(memo_key)
+            try:
+                _push_discern(spark, discern_context=ctx, version=ver,
+                              discern_root=root, concepts=ctx_concepts)
+            except BaseException:
+                # After a FAILED push the context's broadcast state is unknowable
+                # (the JVM may have partially replaced value sets before raising).
+                # 'Absent' — forcing a re-push next time — is the only truthful
+                # memo state.
+                _DISCERN_PUSH_LAST.pop(memo_key, None)
+                raise
+            _DISCERN_PUSH_LAST[memo_key] = want
             logger.info("push_discern OK: context=%s concepts=%s root=%s",
                         ctx, ctx_concepts, root)
 
@@ -1985,9 +2002,19 @@ class ExtractItem(SharedMethodsMixin):
         return result
 
 
-# Identical Discern pushes already made in THIS process (see push_discern's memo
-# note). Module-level so every ExtractItem in the session shares it.
-_DISCERN_PUSH_MEMO = set()
+# LAST Discern push per CONTEXT in THIS process (see push_discern's memo note).
+# Module-level so every ExtractItem shares it. Key = context GUID alone — the
+# UDF resolves by context, so a push of the same context from a DIFFERENT root
+# or version also replaces its state; root/version live in the compared VALUE
+# (root, version, concepts-tuple). A dict of last state — NOT a set of every
+# push ever made: pushing a context loads that call's concept SUBSET, and a
+# later push of the SAME context REPLACES the broadcast value sets. The original
+# set-based memo skipped a re-push whose subset had since been replaced, and the
+# UDF threw 'Unknown value set reference' (datadictrwd 013 QC differential,
+# 2026-08-24). Skip is safe ONLY when the context's CURRENT (root, version,
+# subset) equals the requested one.
+_DISCERN_PUSH_LAST = {}
+_MISSING = object()   # sentinel: distinguishes 'never pushed' from 'pushed with None'
 
 
 def _discern_sql_lit(value):
