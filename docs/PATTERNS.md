@@ -298,6 +298,11 @@ r, e, d = ctx.r, ctx.e, ctx.d
 dataLoc = ctx.dataLoc
 ```
 
+Optional callFun namespaces (`o`, `ss`, `iuh`) are **not** in this unpack — `load_into_local`
+only injects them if that TableList built. For OMOP, do not copy `o = ctx.o` from another
+project; the how-to is `~/projects/omop/102-OMOP-Standardized-Vocabularies`
+(`getattr(ctx, 'o', None)`).
+
 > **Legacy note:** older examples used `Resources(local_config=...)`. New HDL notebooks
 > should use `pipeline_setup('000-control.yaml')` as above; migrate inherited notebooks
 > before running the gate.
