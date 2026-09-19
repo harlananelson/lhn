@@ -1422,7 +1422,11 @@ class ExtractItem(SharedMethodsMixin):
             set_self_df (bool): set ``self.df`` and auto-write (default True).
 
         Returns:
-            pyspark.sql.DataFrame: long-form level counts by ``group_by``.
+            pyspark.sql.DataFrame: long-form level counts by ``group_by``. The 'value'
+                column (used by value/brandType-style roots that have no
+                standard.id/codingSystemId/primaryDisplay triple) is ALWAYS string
+                type, even when the source leaf is numeric -- callers doing numeric
+                work on 'value' must cast it back explicitly.
         """
         from spark_config_mapper import (get_standard_id_elements, explode_single_array,
                                           flat_schema, flattenTable)
@@ -1521,7 +1525,31 @@ class ExtractItem(SharedMethodsMixin):
                         break
             if not level_cols and value_col is None:
                 continue
-            by_canon = dict(renames)  # canon -> source column, for the triple case
+            # canon -> source column. NOTE: renames holds (source_col, canon) pairs, so
+            # this must invert them -- dict(renames) alone gives {source_col: canon}, the
+            # WRONG direction, and made every triple field silently take the F.lit(None)
+            # branch below (canon in by_canon was always False). Confirmed via lhn-replica
+            # test: 2f5bb8b before this fix produced 48 all-NULL rows instead of 2340 real
+            # ones for the exact same 4-root fixture main got right -- the job succeeded
+            # and wrote a plausible-looking table with zero actual codes in it.
+            by_canon = {canon: col for col, canon in renames}
+            # DELIBERATE: every canonical field (including 'value') is cast to string.
+            # F.array(*level_structs) below requires every struct to share one schema,
+            # so a heterogeneous set of roots (some triple-typed, some value-typed with
+            # whatever native type that leaf column happens to have) MUST agree on a
+            # type per field -- this is a real, unavoidable constraint of the
+            # single-array-of-structs approach, not an incidental side effect.
+            # 'value' is where this actually bites: lhn-replica confirmed (2026-09-19)
+            # that `main`'s dtype for 'value' is data-dependent -- a numeric (e.g.
+            # DoubleType) leaf survives as-is UNLESS `_union_aligned` ever has to merge
+            # it with a different root's differently-typed 'value' column, in which case
+            # unionByName already coerces to string today. So `main` is only sometimes
+            # numeric; this rewrite makes it ALWAYS string. Values render identically
+            # (confirmed via canonical digest), but a downstream numeric comparison/
+            # aggregation on 'value' would see lexical behavior instead. Uniform string
+            # is more predictable than main's data-dependent typing, which is why this
+            # keeps the cast rather than trying to preserve native types -- but any
+            # caller doing numeric work on 'value' needs to know to cast it back.
             field_exprs = [F.lit(root_dot).alias('root_field')]
             for canon in canon_fields[:-1]:  # the three triple fields
                 if canon in by_canon:
