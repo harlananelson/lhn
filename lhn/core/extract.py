@@ -1483,6 +1483,27 @@ class ExtractItem(SharedMethodsMixin):
             df = flattenTable(df, error_on_multiple_arrays=False)
         flat_cols = set(df.columns)
 
+        # CACHE before the per-root loop: each iteration below builds a `sub`
+        # DataFrame from THIS SAME `df`, and Spark's Catalyst has no common-subplan
+        # elimination across sibling branches of one physical plan (confirmed via a
+        # measured EXPLAIN on clinical_event, 2026-09-18 -- 4 root fields produced 4
+        # independent FileScans of the identical source, each followed by 2 shuffle
+        # exchanges, for ONE logical unit; 156 minutes for one clinical_event/year).
+        # Caching here collapses that back to one scan. Safe: `df` at this point has
+        # already been through the caller's column projection (only pattern-matched
+        # + group_by + person columns survive), not the full source width.
+        #
+        # NOTE this cache is NOT reachable from the caller (build_datadict returns
+        # `result`, built FROM `df`, not `df` itself) so there is no explicit
+        # unpersist call here or in the caller that targets it -- it relies on
+        # Spark's normal LRU cache eviction under memory pressure, same as any
+        # cache without a paired unpersist. Acceptable given the fix it buys
+        # (avoiding 3-4x redundant full-table rescans is a much larger win than the
+        # eviction imprecision costs) but call `spark.catalog.clearCache()` between
+        # units if repeated calls in one long-running session show memory pressure
+        # from accumulated uncleared caches.
+        df = df.cache()
+
         triple = [('standard_id', 'standard_id'),
                   ('standard_codingSystemId', 'standard_codingSystemId'),
                   ('standard_primaryDisplay', 'standard_primaryDisplay')]
