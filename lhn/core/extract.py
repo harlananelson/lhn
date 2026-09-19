@@ -1483,10 +1483,28 @@ class ExtractItem(SharedMethodsMixin):
             df = flattenTable(df, error_on_multiple_arrays=False)
         flat_cols = set(df.columns)
 
+        # UNTESTED FROM THIS SESSION — needs the same sha256/EXPLAIN validation lhn-replica
+        # gave the (rejected) cache-based attempt at this fix before anyone trusts it.
+        #
+        # Single-pass rewrite (2026-09-19), replacing a df.cache() attempt that lhn-replica
+        # measured as a regression at every size tested (30M-row/4-root: 34.7s baseline vs
+        # 72.8s cached; the cache raced itself without forced materialization, and even
+        # materialized it lost per-branch column pruning, reading 4-15x more bytes for 4x
+        # fewer records -- see PR #5 discussion). That review's own recommendation: remove
+        # the redundant per-root FileScans BY CONSTRUCTION instead of caching around them,
+        # since a shared cache can't reproduce Catalyst's per-branch column pruning. This
+        # builds ONE struct per applicable root (any inapplicable canonical field NULL —
+        # same null-filling _union_aligned used to do across frames, done per-row instead),
+        # explodes ONCE, and does ONE groupBy+countDistinct over all roots together instead
+        # of N separate ones unioned at the end. This should ALSO collapse the per-root
+        # shuffles (the cache fix provably did not touch them at all) since there's now one
+        # groupBy instead of N.
         triple = [('standard_id', 'standard_id'),
                   ('standard_codingSystemId', 'standard_codingSystemId'),
                   ('standard_primaryDisplay', 'standard_primaryDisplay')]
-        frames = []
+        canon_fields = [c for _, c in triple] + ['value']
+
+        level_structs = []
         for root_dot in roots_dot:
             root_u = root_dot.replace('.', '_')
             renames, level_cols = [], []
@@ -1494,32 +1512,54 @@ class ExtractItem(SharedMethodsMixin):
                 col = root_u + '_' + suffix        # EXACT name (no endswith mis-bind)
                 if col in flat_cols:
                     renames.append((col, canon)); level_cols.append(canon)
+            value_col = None
             if not level_cols:
                 # value/brandType-style root — use its leaf column as a generic value.
                 for cand in (root_u + '_value', root_u + '_brandType', root_u):
                     if cand in flat_cols:
-                        renames.append((cand, 'value')); level_cols.append('value'); break
-            if not level_cols:
+                        value_col = cand
+                        break
+            if not level_cols and value_col is None:
                 continue
-            sub = df.select(*(group_by + [person] + [r[0] for r in renames]))
-            for src_c, canon in renames:
-                sub = sub.withColumnRenamed(src_c, canon)
-            # distinct PERSONS per (group_by, level) — the datadict "Subjects" count
-            # (distinct on the person key also makes sibling-array explosion harmless).
-            counted = (sub.groupBy(*(group_by + level_cols))
-                       .agg(F.countDistinct(person).alias('count'))
-                       .withColumn('source_table', F.lit(source_table))
-                       .withColumn('root_field', F.lit(root_dot)))
-            frames.append(counted)
+            by_canon = dict(renames)  # canon -> source column, for the triple case
+            field_exprs = [F.lit(root_dot).alias('root_field')]
+            for canon in canon_fields[:-1]:  # the three triple fields
+                if canon in by_canon:
+                    field_exprs.append(F.col(by_canon[canon]).cast('string').alias(canon))
+                else:
+                    field_exprs.append(F.lit(None).cast('string').alias(canon))
+            # 'value' field: only populated for the value/brandType fallback path — a
+            # triple-root's rows get NULL here, matching the original code's mutual
+            # exclusivity (a root contributes to EITHER the triple OR 'value', never both).
+            if value_col is not None:
+                field_exprs.append(F.col(value_col).cast('string').alias('value'))
+            else:
+                field_exprs.append(F.lit(None).cast('string').alias('value'))
+            level_structs.append(F.struct(*field_exprs))
 
-        result = _union_aligned(frames)
-        if result is None:
+        if not level_structs:
             logger.warning("build_datadict on '%s': no roots resolved to level columns "
                            "— empty result (check pattern_strings vs the source schema).", name)
             result = df.select(*group_by).limit(0)
-        elif set_self_df:
-            self.df = result
-            self._auto_write()
+        else:
+            level_col_names = ['root_field'] + canon_fields
+            exploded = (
+                df.select(*(group_by + [person]),
+                          F.explode(F.array(*level_structs)).alias('_level'))
+                  .select(*(group_by + [person]),
+                          *[F.col('_level.' + c).alias(c) for c in level_col_names])
+            )
+            # distinct PERSONS per (group_by, root_field, level) — the datadict "Subjects"
+            # count (distinct on the person key also makes sibling-array explosion
+            # harmless). root_field is part of the grouping key, so two different roots
+            # can never collide even when both happen to be NULL in the same canonical
+            # field (e.g. a genuinely-null code vs. a value-root's unused triple slots).
+            result = (exploded.groupBy(*(group_by + level_col_names))
+                      .agg(F.countDistinct(person).alias('count'))
+                      .withColumn('source_table', F.lit(source_table)))
+            if set_self_df:
+                self.df = result
+                self._auto_write()
         return result
 
     def build_code_concept_map(self, source, concept_flags=None, codefield=None,
