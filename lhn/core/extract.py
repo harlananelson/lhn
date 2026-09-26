@@ -1590,6 +1590,209 @@ class ExtractItem(SharedMethodsMixin):
                 self._auto_write()
         return result
 
+    def build_datadict_narrow_shuffle(self, source, group_by=None, datefield=None,
+                                      index_fields=None, pattern_strings=None,
+                                      source_table=None, set_self_df=True):
+        """EXPERIMENTAL / UNVERIFIED candidate -- do not use in production, do not merge,
+        until lhn-replica-fc has (1) confirmed byte-identical output against
+        ``build_datadict`` on a canonical digest, INCLUDING a fixture that exercises the
+        NULL-collision trap documented below, and (2) measured whether it actually reduces
+        shuffle-write bytes relative to ``build_datadict`` (95bf5fc) on real-shaped data.
+
+        Motivation (FINDINGS-2026-09-19b-build-datadict-explode.md, section 4): the
+        single-pass explode rewrite (95bf5fc) fixed the N-redundant-scans problem but pays a
+        27-34% shuffle-write INCREASE over the old per-root-loop code, because every exploded
+        row always carries the full 4-column canon struct (``standard_id``,
+        ``standard_codingSystemId``, ``standard_primaryDisplay``, ``value``) even though any
+        given root only ever populates ONE of two mutually-exclusive shapes (a triple root
+        populates the first 3 and leaves ``value`` NULL; a value/brandType root populates
+        only ``value`` and leaves the triple NULL). 3 of 4 columns are dead weight on every
+        row, every time, through the shuffle.
+
+        This variant packs each row down to 3 columns before the shuffle instead of 5
+        (``root_field``, ``level_kind``, ``level_key``), decoding back to the original
+        4-column output schema AFTER the ``groupBy`` + ``countDistinct`` -- on the aggregated
+        result, which is orders of magnitude smaller than the raw exploded rows, so the
+        decode cost is negligible regardless of how it's written.
+
+        CORRECTNESS TRAP THIS CODE MUST AVOID (found while designing this, confirmed by
+        checking Spark's own semantics, NOT yet exercised by a test): ``F.concat_ws`` SKIPS
+        NULL arguments rather than preserving their position. A naive
+        ``concat_ws(sep, id, codingSystemId, primaryDisplay)`` would silently COLLIDE two
+        different tuples that should never be treated as the same group -- e.g.
+        ``(id=NULL, codingSystemId='X', primaryDisplay=NULL)`` and
+        ``(id='X', codingSystemId=NULL, primaryDisplay=NULL)`` both produce the bare string
+        ``'X'``. Every sub-field is ``coalesce``d to an explicit sentinel token BEFORE
+        concatenation specifically to prevent this -- see ``_NULL_TOKEN`` below. This is
+        exactly the kind of silent wrong-answer bug this package has hit before (the
+        dict-inversion bug in 2f5bb8b, caught only by a sha256 digest comparison, not by a
+        row-count check) -- so lhn-replica-fc's test MUST include a fixture with this exact
+        NULL pattern (one triple field NULL, another populated, across two different roots
+        or rows) and verify the digest still matches ``build_datadict``, not merely that row
+        counts agree.
+
+        A second, weaker assumption also needs verifying rather than trusted: the separator
+        and sentinel below are plain, unlikely-in-real-data ASCII tokens, not
+        cryptographically guaranteed unique. If any real ``standard.primaryDisplay`` or
+        ``value`` text ever contains these exact substrings, this would silently misgroup.
+        Worth a defensive count of how many real source rows contain them (expected: zero)
+        before trusting this on real HDL data, not just synthetic fixtures.
+
+        Args / Returns: identical to :meth:`build_datadict` -- this is a drop-in candidate
+        replacement, not a new API.
+        """
+        from spark_config_mapper import (get_standard_id_elements, explode_single_array,
+                                          flat_schema, flattenTable)
+        from pyspark.sql.types import ArrayType, StructType
+        name = getattr(self, 'name', 'unknown')
+        group_by = group_by or getattr(self, 'groupBy', None) or ['tenant', 'year']
+        pattern_strings = (pattern_strings or getattr(self, 'pattern_strings', None)
+                           or ['standard.id', 'standard.codingSystemId',
+                               'standard.primaryDisplay', 'value', 'brandType'])
+        if not pattern_strings:
+            raise ValueError(
+                "build_datadict_narrow_shuffle on '{}': pattern_strings is empty -- root "
+                "discovery matches nothing and writes zero rows.".format(name))
+        index_fields = (index_fields or getattr(self, 'indexFields', None)
+                        or ['personid', 'tenant'])
+        datefield = datefield if datefield is not None else getattr(
+            self, 'datefieldPrimary', None)
+        source_table = (source_table or getattr(self, 'sourceTable', None) or name)
+
+        df = source.df if hasattr(source, 'df') else source
+        if not isinstance(df, DataFrame):
+            raise ValueError(
+                "build_datadict_narrow_shuffle on '{}': source has no DataFrame (got "
+                "{}).".format(name, type(df).__name__))
+        df = _derive_date_parts(df, datefield, group_by)
+        person = index_fields[0] if index_fields else 'personid'
+        need = group_by + [person]
+        missing = [c for c in need if c not in df.columns]
+        if missing:
+            raise ValueError(
+                "build_datadict_narrow_shuffle on '{}': required columns {} not in source "
+                "(columns: {}).".format(name, missing, df.columns))
+
+        roots_dot = get_standard_id_elements(flat_schema(df), pattern_strings)
+        if not roots_dot:
+            logger.warning("build_datadict_narrow_shuffle on '%s': no standard root fields "
+                           "matched %s in %s.", name, pattern_strings, source_table)
+
+        guard = 0
+        while any(isinstance(f.dataType, ArrayType) for f in df.schema.fields) and guard < 25:
+            arr = next(f.name for f in df.schema.fields
+                       if isinstance(f.dataType, ArrayType))
+            df = explode_single_array(df, arr, flatten=True)
+            guard += 1
+        if guard >= 25:
+            logger.warning("build_datadict_narrow_shuffle on '%s': array-explode guard hit "
+                           "(25) -- arrays may remain unflattened.", name)
+        if any(isinstance(f.dataType, StructType) for f in df.schema.fields):
+            df = flattenTable(df, error_on_multiple_arrays=False)
+        flat_cols = set(df.columns)
+
+        # Plain ASCII tokens, not control characters -- deliberately readable/debuggable
+        # and safe to embed in source. SEE THE CORRECTNESS-TRAP DOCSTRING SECTION ABOVE:
+        # not cryptographically unique, a defensive count against real data is recommended
+        # before trusting this beyond synthetic fixtures. A real separator is REQUIRED for
+        # split() to decode the packed key -- an empty separator would be undecodable (no
+        # boundary between parts of differing length).
+        _SEP = '~LHN_SEP~'
+        _NULL_TOKEN = '~LHN_NULL~'
+
+        triple = [('standard_id', 'standard_id'),
+                  ('standard_codingSystemId', 'standard_codingSystemId'),
+                  ('standard_primaryDisplay', 'standard_primaryDisplay')]
+        triple_order = ('standard_id', 'standard_codingSystemId', 'standard_primaryDisplay')
+
+        level_structs = []
+        for root_dot in roots_dot:
+            root_u = root_dot.replace('.', '_')
+            renames, level_cols = [], []
+            for suffix, canon in triple:
+                col = root_u + '_' + suffix
+                if col in flat_cols:
+                    renames.append((col, canon)); level_cols.append(canon)
+            value_col = None
+            if not level_cols:
+                for cand in (root_u + '_value', root_u + '_brandType', root_u):
+                    if cand in flat_cols:
+                        value_col = cand
+                        break
+            if not level_cols and value_col is None:
+                continue
+            by_canon = {canon: col for col, canon in renames}  # canon -> source column
+
+            if level_cols:
+                # Triple root: pack the 3-field tuple into ONE NULL-safe composite key so
+                # its JOINT identity survives the shuffle as a single column instead of 3.
+                # coalesce-to-sentinel BEFORE concat_ws is what prevents the collision
+                # documented above -- concat_ws alone would silently drop NULL positions.
+                # A root matching only SOME of the 3 triple suffixes still gets a stable
+                # 3-position key (missing sub-fields padded with the same sentinel).
+                ordered = [
+                    F.coalesce(F.col(by_canon[canon]).cast('string'), F.lit(_NULL_TOKEN))
+                    if canon in by_canon else F.lit(_NULL_TOKEN)
+                    for canon in triple_order
+                ]
+                level_key_expr = F.concat_ws(_SEP, *ordered)
+                level_kind_expr = F.lit('T')
+            else:
+                level_key_expr = F.coalesce(F.col(value_col).cast('string'),
+                                            F.lit(_NULL_TOKEN))
+                level_kind_expr = F.lit('V')
+
+            level_structs.append(F.struct(
+                F.lit(root_dot).alias('root_field'),
+                level_kind_expr.alias('level_kind'),
+                level_key_expr.alias('level_key'),
+            ))
+
+        if not level_structs:
+            logger.warning("build_datadict_narrow_shuffle on '%s': no roots resolved -- "
+                           "empty result.", name)
+            result = df.select(*group_by).limit(0)
+        else:
+            exploded = (
+                df.select(*(group_by + [person]),
+                          F.explode(F.array(*level_structs)).alias('_level'))
+                  .select(*(group_by + [person]),
+                          F.col('_level.root_field').alias('root_field'),
+                          F.col('_level.level_kind').alias('level_kind'),
+                          F.col('_level.level_key').alias('level_key'))
+            )
+            # THE NARROWER SHUFFLE: 3 grouping columns (root_field, level_kind, level_key)
+            # instead of build_datadict's 5 (root_field + 4 canon fields), carrying no
+            # NULL padding for the inapplicable shape.
+            counted = (exploded.groupBy(*(group_by + ['root_field', 'level_kind', 'level_key']))
+                      .agg(F.countDistinct(person).alias('count')))
+
+            # Decode back to build_datadict's exact output schema -- AFTER the shuffle, on
+            # the small aggregated result, so decode cost is negligible. split() on a
+            # literal (non-regex-special) ASCII token is safe without escaping.
+            split_key = F.split(F.col('level_key'), _SEP)
+
+            def _untoken(colexpr):
+                return F.when(colexpr == _NULL_TOKEN, F.lit(None)).otherwise(colexpr)
+
+            result = (
+                counted
+                .withColumn('standard_id', F.when(
+                    F.col('level_kind') == 'T', _untoken(split_key.getItem(0))))
+                .withColumn('standard_codingSystemId', F.when(
+                    F.col('level_kind') == 'T', _untoken(split_key.getItem(1))))
+                .withColumn('standard_primaryDisplay', F.when(
+                    F.col('level_kind') == 'T', _untoken(split_key.getItem(2))))
+                .withColumn('value', F.when(
+                    F.col('level_kind') == 'V', _untoken(F.col('level_key'))))
+                .drop('level_kind', 'level_key')
+                .withColumn('source_table', F.lit(source_table))
+            )
+            if set_self_df:
+                self.df = result
+                self._auto_write()
+        return result
+
     def build_code_concept_map(self, source, concept_flags=None, codefield=None,
                                source_table=None, set_self_df=True):
         """Persisted ``code → concept`` map: evaluate Discern membership ONCE per
