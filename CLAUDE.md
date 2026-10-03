@@ -1,6 +1,6 @@
 # LHN — HealthEIntent Data Extraction Package
 
-## Repo Visibility: PRIVATE
+## Repo Visibility: PUBLIC
 
 Healthcare data extraction and analysis workflows for HealthEIntent (Oracle Health) systems. Python package using PySpark for clinical data processing.
 

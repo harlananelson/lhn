@@ -107,19 +107,16 @@ Gemini-2.5-Pro). All 5 independently flagged one real bug + robustness gaps; app
 
 ### Read first, in order
 1. **This whole doc** — mechanism, gotchas, mapping.
-2. `~/projects/hdl/python/hnelson3.py` — `ExtractItem.push_discern` / `query_flat_rwd` (port source).
-3. `~/projects/hdl/foresight/discern.py` — the SDK (push_discern → JVM; UDF families).
+2. `python/hnelson3.py` — `ExtractItem.push_discern` / `query_flat_rwd` (port source).
+3. `foresight/discern.py` — the SDK (push_discern → JVM; UDF families).
 4. `hmi/hdl/extraction/055-Ontology-Comorbidities.txt` + its rendered `.md` (in txtarchivetransfer).
-5. `~/projects/lhn/lhn/core/extract.py` — the class to extend.
+5. `lhn/core/extract.py` — the class to extend.
 
 ### Landmines (full detail in "Gotchas" below)
 - A concept name **not in the loaded context CRASHES** (Py4JJavaError), not FALSE → only pass names
   validated against `ontology_tabulation.csv`.
 - The code arg is the **struct** (`conditioncode`), not `conditioncode_standard_id`.
 - `discern_root` **v1** is proven for every context used so far; a `push_discern` failure ⇒ try v2.
-- **Commit identities:** lhn = **GitHub** (default id + Claude trailer); hmi/hdl = **Azure DevOps**
-  (`hnelson3@rwd.org`, **no** trailer). Deploy hmi notebooks via the **txtarchivetransfer** repo
-  (`hmi/` subdir) + `bash fetchupdate.sh` on HDL; render comes back as `.md` in that repo.
 
 ---
 
@@ -157,7 +154,7 @@ Gemini-2.5-Pro). All 5 independently flagged one real bug + robustness gaps; app
   `has_concept_in_context`/`has_any_concept_in_context(code, array(...), 'GUID')` (context-qualified).
 
 ## The mechanism (extraction half)
-### foresight `push_discern` [CONFIRMED] — `~/projects/hdl/foresight/discern.py:207`
+### foresight `push_discern` [CONFIRMED] — `foresight/discern.py:207`
 ```python
 def push_discern(spark_session, discern_context, version=None, discern_root=None, concepts=None):
     jconcepts = HashSet(concepts)   # subset to load (memory)
@@ -188,7 +185,7 @@ if stopDate:        DF = DF.filter(f"{datefieldPrimary} <= '{stopDate}'")
 # ... reconcile date fields, optional dedup/last, write to outSchema.outTable
 ```
 
-## The working end-to-end example [CONFIRMED] — `~/projects/hdl/Projects/Colon-Cancer/010-...RWD.ipynb`
+## The working end-to-end example [CONFIRMED] — `Projects/Colon-Cancer/010-...RWD.ipynb`
 A Colon-Cancer notebook that **ran on HDL**:
 ```python
 # cell 3:  h.process_config2(...) builds e / r / db / proj from 000-config.yaml
@@ -198,7 +195,7 @@ A Colon-Cancer notebook that **ran on HDL**:
 # cell 45: countDistinct(conditioncode_standard_id, ...primaryDisplay)       # inspect
 ```
 
-## The wrapper layer [CONFIRMED] — `~/projects/hdl/python/hnelson3.py`, `class ExtractItem`:4654
+## The wrapper layer [CONFIRMED] — `python/hnelson3.py`, `class ExtractItem`:4654
 The methods are **thin config-reading wrappers** that call the standalone/foresight functions via
 `setFunctionParameters(func, funCall, config_dict)` (reconciles funCall + config_dict against the
 target function's signature). NOT magic — the earlier confusion was just having the wrong file.
@@ -218,12 +215,12 @@ self.df = query_flat_rwd(**setFunctionParameters(query_flat_rwd, funCall, {}))  
   `datefieldPrimary`, `datefields`, `conditionCodefield`, `location`**.
 - `push_discern` registers the context (concepts subset). `query_flat_rwd` filters `source` to those
   concepts (`filter_concepts=True` → `has_any_concept`) and writes `schema.location`, sets `self.df`.
-- Canonical live module: `~/projects/hdl/python/hnelson3.py` (methods) + `hnelson3parts.py`
+- Canonical live module: `python/hnelson3.py` (methods) + `hnelson3parts.py`
   (`process_config2`). The `troponin-oldversion` `class Item` was an older/parallel copy — ignore it.
 
 ## The tabulation half [PARTIAL — flow understood, canonical version OPEN]
 The tabulation is the **producer** of `tabulated_ontologies.*`; the `conditionOnt` extraction is
-the **consumer**. Two levels (`~/projects/hdl/python/`):
+the **consumer**. Two levels (`python/`):
 - **`ontologyByTableCode(inTable, codefield, inSchema, ontList, ontSum, notMatched, …)`** — per data
   table: scan `inTable`'s `codefield` in `inSchema`, match against the ontology contexts/concepts
   (`ontList = tabulated_ontologies.indexContextGroups`), write **coverage** rows to
@@ -292,10 +289,10 @@ you inspect code-system overlap across contexts for a concept.
 ## Source index (where the pieces live)
 | Piece | Location |
 |---|---|
-| foresight SDK (push/has_any_concept) | `~/projects/hdl/foresight/discern.py` |
+| foresight SDK (push/has_any_concept) | `foresight/discern.py` |
 | standalone `query_flat_rwd`, `add_concept_indicators`, `summarizeCodes` | `healthcare-archive/healtheintent/python/hnelson3.py` (+ `rwdcode.py`, `pymodule.py`) |
 | `Item` class + `process_config2` | `troponin/oldversion/healtheintent-troponin-all.txt` (Item:1412, process_config2:63467) |
-| working end-to-end | `~/projects/hdl/Projects/Colon-Cancer/010-Colon-Cancer-Extraction-RWD.ipynb` |
+| working end-to-end | `Projects/Colon-Cancer/010-Colon-Cancer-Extraction-RWD.ipynb` |
 | schema-wide tabulation | `healthcare-archive/healtheintent/python/call_add_ontology_count.py` |
 | ontology tables on HDL | `standard_ontologies.ontologies`, `tabulated_ontologies.master_ontology_ont_rwd` (full catalog) |
 | current-lhn ExtractItem (target) | `lhn/lhn/core/extract.py` |

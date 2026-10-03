@@ -25,30 +25,19 @@ Most lhn pipelines follow this core pattern:
 ## Notebook Authoring Conventions
 
 How to *write* an lhn pipeline notebook. These conventions are **enforced mechanically** by
-the `hdl-harness` gate (`check_notebook.py`), which validates each notebook against the live
-HDL catalog before it ships. The rule of thumb: **use the package method, and confirm column
+a notebook-validation step (the original authors run an internal gate), which checks each
+notebook against the live table catalog before it ships. The rule of thumb: **use the package method, and confirm column
 names from the data dictionary up front — don't write defensive code for unknowns.** These
 notebooks are single-project pipelines, not generalized libraries.
 
-Run the gate before deploying (it resolves `r.*`/`e.*`/`d.*` columns from the catalog
-and lints for the anti-patterns below). Prefer the orchestrator wrapper — it calls
-`check_notebook.py` under `--validate`:
-
-```bash
-# Gate-only (no push/render) — for full deploy use --all (includes --validate); see §7
-HARNESS=~/projects/hdl-harness
-python $HARNESS/hdl_run.py <notebook>.txt \
-  --config <project>/000-control.yaml \
-  --refs <project>/pipeline_refs.json \
-  --catalog ~/projects/txtarchivetransfer/scripts/hdl_catalog.json \
-  --validate
-```
+Validate before deploying: resolve every `r.*`/`e.*`/`d.*` column against the data dictionary or
+Spark catalog and lint for the anti-patterns below. Any equivalent check works; the point is that
+column names are confirmed *before* the notebook ships.
 
 ### 1. Confirm column names when authoring — the notebook just uses them
 
 **This is a directive for *writing* the notebook, not code to put *in* it.** There is
-definitive metadata for every table — the Spark catalog (`r.*`/`e.*`/`d.*`/`o.*`, which the
-hdl-harness records) and the `targets` schema. Confirm the real column names against that
+definitive metadata for every table — the Spark catalog (`r.*`/`e.*`/`d.*`/`o.*`) and the `targets` schema. Confirm the real column names against that
 metadata **as you write**; then the notebook simply uses them.
 
 These are **readable analysis notebooks**, not production jobs — keep them clean. Do **not**
@@ -83,7 +72,7 @@ intact. Renaming is a config/metadata concern, never a notebook one.
 ### 2. Use lhn methods — don't hand-roll what the package does
 
 **THE RULE: any line that is NOT a method call is a candidate reinvention. Before you write
-it, search the lhn API** (`~/projects/hdl-harness/docs/api_reference.md` + the method
+it, search the lhn API** (the lhn API reference + the method
 signatures and *their parameters*) **to see whether the functionality is already coded.** A
 raw `.filter` / `.select` / `.groupBy` / `.agg` / `.withColumnRenamed` / `F.to_date` /
 `collect()` / manual loop should make you **stop and check first**. It's usually already there
@@ -134,7 +123,7 @@ e.codes.df.tabulate(group_cols=['group'])             # BAD — tabulate is not 
 ```
 
 Before writing a new helper, grep the generated package API
-(`~/projects/hdl-harness/docs/api_reference.md`) for an existing function rather than
+(the lhn API reference) for an existing function rather than
 re-implementing it.
 
 ### 2b. Count the passes — "uses the method" is necessary, not sufficient
@@ -205,7 +194,7 @@ near-miss method names (edit-distance) and unknown kwargs against the generated 
 so a typo is caught before HDL. The generated API mixes camelCase (`elementList`,
 `elementListSource`, `cacheResult`) with snake_case (`find_method`, `broadcast_flag`) —
 use the exact spellings from the API ref. See
-`~/projects/hdl-harness/docs/api_reference.md` for authoritative signatures.
+the lhn API reference for authoritative signatures.
 
 ### 5. No hardcoded absolute paths
 
@@ -215,7 +204,7 @@ Use the configured paths (`ctx.dataLoc`, the ExtractItem `.csv`/`.location` defa
 ### 6. txtarchive `.txt` format
 
 Author notebooks as LLM-friendly `.txt` (full format:
-`~/projects/txtarchive/create-archive-llm-instructions.md`). The YAML front matter goes in
+`create-archive-llm-instructions.md` in the txtarchive project). The YAML front matter goes in
 **Raw Cell 1** as a Python multi-line string literal (`"""` … `"""`); code cells are
 `# Cell N`, markdown `# Markdown Cell N`. Without the `"""` wrapper the YAML is lost on
 extraction (no title, no embedded resources). The `---` YAML fences inside the string are
@@ -241,7 +230,7 @@ Validate locally:
 ### 7. HDL deploy, execute, render, and review
 
 Notebooks ship as LLM-friendly `.txt` archives via `txtarchivetransfer`, extract on HDL
-with `fetchupdate.sh` / `extract-changed.sh`, then run through the harness render path:
+with `fetchupdate.sh` / `extract-changed.sh`, then run through the render path:
 
 ```
 nbconvert --execute  →  quarto --no-execute (md or html)  →  Projects/archive/<subdir>/  →  git push  →  local git pull  →  PHI scan
@@ -250,36 +239,11 @@ nbconvert --execute  →  quarto --no-execute (md or html)  →  Projects/archiv
 - **md** when the executed notebook has no graphics or formatted tables (gtsummary/gt HTML).
 - **html** when it does (`render_format.py` auto-detects).
 
-Archive subdir mirrors the transfer repo (`hmi/`, `allison/`, `SickleCell/`, …). Full
-workflow, kernels, and quarto constraints:
+Archive subdir mirrors the transfer repo (one `<project>/` directory per project).
 
-`~/projects/hdl-harness/docs/txtarchive-hdl-integration.md`
-
-**Orchestrator (local):** `~/projects/hdl-harness/hdl_run.py` — use **`--all`** for the
-full loop (includes **`--validate`**), or toggle stages individually. Add **`--fix-loop`**
-to cycle check → 3090 fix → re-check until the gate is clean (or `--max-rounds`).
-
-```bash
-HARNESS=~/projects/hdl-harness
-CATALOG=~/projects/txtarchivetransfer/scripts/hdl_catalog.json
-
-# Full loop (validate → push → fetchupdate → render → pull + PHI scan)
-python $HARNESS/hdl_run.py allison/054-derm-cohort-identification.txt \
-  --config ~/projects/allison/000-control.yaml \
-  --refs ~/projects/allison/pipeline_refs.json \
-  --catalog $CATALOG \
-  --transfer ~/projects/txtarchivetransfer \
-  --hdl-project-dir "$HOME/work/Users/$USER/Projects/derm" \
-  --all --fix-loop
-
-# Unattended: add --yes (skips confirmations; PHI scan on --pull still runs)
-```
-
-`--render` includes nbconvert execution. `--all` orchestrates the full sequence (validate,
-push, fetch, execute+render, pull, PHI scan) — a separate `--execute` flag is unnecessary.
-On HDL after `fetchupdate`, `hdl_run.py --all` triggers
-`~/work/Users/$USER/scripts/render-and-push.sh` via the automation layer (no manual SSH
-step when using the orchestrator).
+**Orchestration.** The original authors drive this loop with an internal orchestrator
+(validate → push → fetchupdate → render → pull → PHI scan). It is not part of lhn; any script
+or manual sequence that performs the same stages works. Keep the PHI scan on the pull step.
 
 ---
 
@@ -300,8 +264,7 @@ dataLoc = ctx.dataLoc
 
 Optional callFun namespaces (`o`, `ss`, `iuh`) are **not** in this unpack — `load_into_local`
 only injects them if that TableList built. For OMOP, do not copy `o = ctx.o` from another
-project; the how-to is `~/projects/omop/102-OMOP-Standardized-Vocabularies`
-(`getattr(ctx, 'o', None)`).
+project; use `getattr(ctx, 'o', None)` and see your OMOP vocabulary how-to.
 
 > **Legacy note:** older examples used `Resources(local_config=...)`. New HDL notebooks
 > should use `pipeline_setup('000-control.yaml')` as above; migrate inherited notebooks
@@ -437,8 +400,6 @@ panel:
 e.panel.entityExtract(e.featureIndex, e.personSpine.df)  # spine = LEFT entitySource
 ```
 
-Full notes: hdl-harness ``docs/entityextract-lineage-and-materialize.md``.
-
 ### Make / skip-if-fresh (`python -m lhn.make`)
 
 ```bash
@@ -448,7 +409,7 @@ python -m lhn.make --section 014 --auto-notebook
 Skips nodes whose config+upstream fingerprint matches
 ``.lhn-make/manifest.json`` and whose Hive table still exists. Splices a
 ``lhn-make-report`` markdown cell into the section notebook. See
-``lhn.make_pipeline`` docstring and the harness lineage doc.
+``lhn.make_pipeline`` docstring.
 
 ---
 
@@ -796,7 +757,7 @@ e.final_cohort.df.write.parquet(e.final_cohort.parquet)
 
 ## Common Field Names Reference
 
-Authoritative column names live in `hdl_catalog.json`; confirm via the harness before use.
+Authoritative column names live in `hdl_catalog.json`; confirm against your own catalog before use.
 This table is a quick reference only.
 
 ### Encounter Fields
@@ -845,8 +806,8 @@ This table is a quick reference only.
 
 ## Error handling on HDL (fail loud, don't hedge)
 
-HDL pipeline notebooks are **single-project**, not reusable libraries. The harness
-discourages defensive patterns (candidate column lists, `getattr(r, ...)`, silent skips).
+HDL pipeline notebooks are **single-project**, not reusable libraries. These conventions
+discourage defensive patterns (candidate column lists, `getattr(r, ...)`, silent skips).
 
 **Preferred:** confirm columns and sources from the catalog up front; let extraction errors
 surface so you fix config or code — don't wrap `create_extract` / `entityExtract` in

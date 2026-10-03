@@ -6,7 +6,7 @@
 **Reviews:** [`reviews/discern-single-pass-2026-08-10/`](../reviews/discern-single-pass-2026-08-10/)  
 **Primary target:** `lhn/core/extract.py` — **both** `extract_concept_events` **and** `build_ontology_counts` (same loop+union shape)  
 **Drivers:**  
-- `hmi/066-Echo-LVEF` (operator: `~/projects/hmi/DISCERN-SCAN-REGRESSION.md`)  
+- `hmi/066-Echo-LVEF` (operator: `DISCERN-SCAN-REGRESSION.md`)  
 - **datadictrwd 015** — live verified-concept catalog (`build_ontology_counts` batches of ~100)  
 - also hmi 035, 055 cabgEvents, any `extract_concept_events` caller  
 **Research basis:** foresight SDK, `hnelson3` indicators + vector gate, lhn git history, multi-model plan review (Fable + AskSage)  
@@ -253,10 +253,10 @@ Avoid a large refactor. Duplication of `_lit` and validation is fine if a shared
 
 | File | Change |
 |---|---|
-| `~/projects/lhn/lhn/core/extract.py` | Single-pass `extract_concept_events`; subset push in `push_discern` concept_flags path; docstrings |
-| `~/projects/lhn/tests/` | Add unit tests (pure logic / mocked where possible; see §6) |
-| `~/projects/lhn/docs/` or regenerate via hdl-harness | After merge: `generate_package_docs.py` / review gate |
-| `~/projects/hmi/DISCERN-SCAN-REGRESSION.md` | Append “fix plan / status” section (optional operator handoff) |
+| `lhn/core/extract.py` | Single-pass `extract_concept_events`; subset push in `push_discern` concept_flags path; docstrings |
+| `tests/` | Add unit tests (pure logic / mocked where possible; see §6) |
+| `docs/` or regenerate the package API docs | After merge: `generate_package_docs.py` / review gate |
+| `DISCERN-SCAN-REGRESSION.md` | Append “fix plan / status” section (optional operator handoff) |
 | hmi notebooks / `000-control.yaml` | **No change expected** for phase 1 |
 
 Do **not** invent a new config dialect unless phase 2 adds an explicit single-context `concepts:` shortcut (optional, separate PR).
@@ -377,7 +377,7 @@ Do **not** re-queue full 066 until steps 1–7 are done (wastes another platform
 1. **Duplicate same-flag rows** when two concepts under the same flag both match: keep union semantics (recommended for v1) or `array_distinct` flags?  
 2. **Phase-2 any-gate prefilter** now or only if 066 still too slow after single-pass? (recommend: after first measurement)  
 3. **Temporary `_legacy_union` flag** for A/B on HDL, or straight cutover? (recommend: straight cutover + sample smoke; legacy adds dead code)  
-4. **Where to land the PR first** — only `lhn`, or also update `DISCERN-SCAN-REGRESSION.md` in `~/projects/hmi` in the same workstream?
+4. **Where to land the PR first** — only `lhn`, or also update `DISCERN-SCAN-REGRESSION.md` in `hmi` in the same workstream?
 
 Default recommendations if no preference: **(1) keep union semantics, (2) phase-2 later, (3) straight cutover, (4) lhn PR first, then operator note.**
 
@@ -387,14 +387,14 @@ Default recommendations if no preference: **(1) keep union semantics, (2) phase-
 
 | Artifact | Path |
 |---|---|
-| Regression diagnosis | `~/projects/hmi/DISCERN-SCAN-REGRESSION.md` |
-| Current method | `~/projects/lhn/lhn/core/extract.py` (`extract_concept_events`, `push_discern`, `extract_concept_flags`) |
-| Foresight SDK | `~/projects/hdl/foresight/discern.py` |
-| Old vector + indicators | `~/projects/hdl/python/hnelson3.py` (`query_flat_rwd`, `add_concept_indicators`, `identify_populated_concepts`) |
-| Old tabulation consumer | `~/projects/hdl/python/add_ontology_count_new.py` |
-| Reconstruction / why not port query_flat | `~/projects/lhn/docs/discern-ontology-reconstruction.md` |
-| 066 config | `~/projects/hmi/hdl/000-control.yaml` → `echoLvefEvents` |
-| 066 notebook | `~/projects/hmi/hdl/extraction/066-Echo-LVEF.txt` |
+| Regression diagnosis | `DISCERN-SCAN-REGRESSION.md` |
+| Current method | `lhn/core/extract.py` (`extract_concept_events`, `push_discern`, `extract_concept_flags`) |
+| Foresight SDK | `foresight/discern.py` |
+| Old vector + indicators | `python/hnelson3.py` (`query_flat_rwd`, `add_concept_indicators`, `identify_populated_concepts`) |
+| Old tabulation consumer | `python/add_ontology_count_new.py` |
+| Reconstruction / why not port query_flat | `docs/discern-ontology-reconstruction.md` |
+| 066 config | `hdl/000-control.yaml` → `echoLvefEvents` |
+| 066 notebook | `hdl/extraction/066-Echo-LVEF.txt` |
 
 ---
 
