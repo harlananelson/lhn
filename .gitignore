@@ -189,3 +189,9 @@ cache.json
 .logs/
 # make runner state
 .lhn-make/
+
+# Internal working material — kept locally, not part of the public repo
+issues/
+reviews/
+docs/.asksage-archive.txt
+txtarchive.log

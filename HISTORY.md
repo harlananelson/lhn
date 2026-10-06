@@ -9,7 +9,7 @@ This GitHub repository contains both versions on separate branches:
 | `main` | Development/refactored code | **In Development** |
 | `v0.1.0-monolithic` | Production code (monolithic) | Active Production |
 
-> **Note**: The production code is also maintained in a separate Azure DevOps repo (`lhn-original`).
+> **Note**: The production code is also maintained in a separate repo (`lhn-original`).
 
 ---
 
